@@ -193,6 +193,9 @@ def test_public_hybrid_runner_abstains_for_fixture_and_preserves_predictions(
         unseen_source_adapter_source_sha256=hashlib.sha256(
             (package / "unseen_source.py").read_bytes()
         ).hexdigest(),
+        public_runner_source_sha256=hashlib.sha256(
+            (package / "public_hybrid_campaign.py").read_bytes()
+        ).hexdigest(),
         candidate_families=["constant", "exponential", "gompertz", "logistic"],
         residual_modes=["ar1_residual", "trend_only"],
         required_public_levels=["L0", "L1", "L2", "L3", "L4"],

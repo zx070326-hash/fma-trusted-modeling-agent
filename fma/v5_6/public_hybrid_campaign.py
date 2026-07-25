@@ -68,6 +68,7 @@ class HybridCampaignProtocolV56(StrictModel):
     hybrid_threshold_hash: Sha256
     hybrid_adapter_source_sha256: Sha256
     unseen_source_adapter_source_sha256: Sha256
+    public_runner_source_sha256: Sha256
     candidate_families: list[Identifier]
     residual_modes: list[Identifier]
     required_public_levels: list[Literal["L0", "L1", "L2", "L3", "L4"]]
@@ -546,6 +547,8 @@ def run_public_hybrid_campaign_v56(
         != hashlib.sha256(
             Path(__file__).with_name("unseen_source.py").read_bytes()
         ).hexdigest()
+        or protocol.public_runner_source_sha256
+        != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         or plan.task_id != launch.snapshot.task_id
         or plan.campaign_protocol_hash != protocol.protocol_hash
         or plan.source_campaign_manifest_hash != unseen.manifest.manifest_hash
