@@ -6,3 +6,6 @@
 
 # V5.6 freezes the exact threshold file bytes as well as semantic content.
 /V5_6_HYBRID_THRESHOLDS.json -text
+
+# Iteration 35 mechanism-suite evidence binds exact artifact bytes.
+/experiments/iteration_35/** -text
