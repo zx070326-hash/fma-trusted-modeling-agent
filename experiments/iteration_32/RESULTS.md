@@ -33,3 +33,24 @@ Current conclusion:
 - external private evaluation and promotion: `NOT_RUN`;
 - scientific qualification: false;
 - real-world action authorization: false.
+
+## Blinded-context shadow campaign
+
+A two-Chat, same-host, cryptographically committed shadow campaign was later
+run under campaign ID `i32-shadow-177747afada8fc62a6ed`. The custodian released
+28 public observations and retained four future targets in an encrypted
+capsule outside the modeling workspace. The modeler compared thirteen
+candidates, rejected autonomous scalar ODE sufficiency, performed recovery,
+and froze one four-horizon submission.
+
+The recovered five-point robust local-level median improved public rolling
+normalized MAE from `0.536501` for persistence to `0.439013`. In the only
+private aggregate evaluation it passed the absolute normalized RMSE and MAE
+limits, but its normalized MAE of `0.555509641873` did not beat the frozen
+persistence result of `0.334022038567`. The outcome is therefore
+`SHADOW_REJECTED`.
+
+The evaluation budget is consumed and this task must not be retuned or
+rescored. It remains same-host shadow evidence, not external qualification.
+The signed receipt, immutable submission, and final result are under
+`campaigns/i32-shadow-177747afada8fc62a6ed/`.

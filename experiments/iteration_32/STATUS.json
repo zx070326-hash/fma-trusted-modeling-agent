@@ -38,6 +38,23 @@
     },
     "source_manifest": "SOURCE_MANIFEST.json"
   },
+  "blinded_context_shadow_campaign": {
+    "campaign_id": "i32-shadow-177747afada8fc62a6ed",
+    "status": "SHADOW_REJECTED",
+    "same_host": true,
+    "external_private_evaluation": false,
+    "public_observations": 28,
+    "private_target_count": 4,
+    "model_candidates_compared": 13,
+    "graph_recovery_performed": true,
+    "submission_frozen": true,
+    "evaluation_budget_allowed": 1,
+    "evaluation_budget_consumed": 1,
+    "absolute_error_thresholds_passed": true,
+    "strictly_beat_persistence": false,
+    "result_file": "campaigns/i32-shadow-177747afada8fc62a6ed/CAMPAIGN_RESULT.json",
+    "scientific_qualification_granted": false
+  },
   "evidence_scope": "local_fixture_and_protocol_mechanics_only",
   "claim_limits": {
     "general_modeling_capability_proven": false,

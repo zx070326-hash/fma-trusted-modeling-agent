@@ -1,0 +1,59 @@
+{
+  "schema_version": "fma.i32_blinded_context_shadow.campaign_result.v1",
+  "campaign_id": "i32-shadow-177747afada8fc62a6ed",
+  "status": "SHADOW_REJECTED",
+  "task_scope": "blinded_context_shadow_only",
+  "transport": {
+    "source_commit": "c36a5fbd8abee5beae53cb6e9717882a3",
+    "remote_handoff_completed": false,
+    "same_host": true
+  },
+  "public_task": {
+    "observation_count": 28,
+    "target_count": 4,
+    "public_task_packet_sha256": "ee81bed146562ff2162e857de5938a0c839b7aae08d0e365e890458682cc2ff5",
+    "public_hash_manifest_sha256": "5aa008deb7bd90c295feaefd288201a461830716e628743a9c80f0e42dd00861",
+    "custody_attestation_sha256": "84b37d8203be8e326abff1c4295483edd70717729bc0b7d5b3dabcdbe6bab3ba"
+  },
+  "modeling": {
+    "candidate_count": 13,
+    "selected_candidate_id": "robust_local_level_median_w5_recovery",
+    "graph_recovery_performed": true,
+    "public_rolling_normalized_mae": 0.439013,
+    "public_persistence_normalized_mae": 0.536501,
+    "public_scientific_acceptance": false,
+    "submission_sha256": "7eb762310c1af3609d49ae2d2920135c01db19d1be5f3ed94f9d1bf76867419b",
+    "submission_manifest_sha256": "843578ce700902704289f9f8a0fe7818a1a5da7d9dcd414b4197c9737c32787a",
+    "shadow_submission_frozen": true
+  },
+  "private_aggregate_evaluation": {
+    "evaluation_budget_allowed": 1,
+    "evaluation_budget_consumed": 1,
+    "evaluation_budget_remaining": 0,
+    "normalized_rmse": 0.657602993616,
+    "normalized_rmse_max": 1.0,
+    "passes_normalized_rmse": true,
+    "normalized_mae": 0.555509641873,
+    "normalized_mae_max": 0.8,
+    "passes_normalized_mae": true,
+    "persistence_normalized_mae": 0.334022038567,
+    "strictly_beats_persistence": false,
+    "receipt_sha256": "b542a5d597ffcf476935a92e3309cf9c00d227d0d8e7796ed0ad1802f38b4884",
+    "evaluation_manifest_sha256": "2db38948713646d22f1be7cfe2e67cf294bd620a1db8ec0aa3337a8e0c958158",
+    "receipt_signature_verified": true
+  },
+  "claim_limits": {
+    "external_private_evaluation": false,
+    "external_qualification": false,
+    "scientific_qualification": false,
+    "promotion_authority": false,
+    "real_world_action_authorized": false
+  },
+  "prospective_learning": {
+    "same_task_retest_permitted": false,
+    "public_advantage_was_not_private_stable": true,
+    "future_private_eligibility_requires_public_scientific_acceptance": true,
+    "future_private_eligibility_requires_time_block_stable_baseline_advantage": true
+  }
+}
+
