@@ -491,6 +491,7 @@ def materialize_world_bank_campaign_v55(
     output_dir: Path,
     fetcher: FetcherV55 = _default_fetcher,
     retrieved_at: datetime | None = None,
+    task_iteration_id: Literal["i34", "i35"] = "i34",
 ) -> WorldBankCustodianSummaryV55:
     """Select, encrypt, and write only generator-safe public artifacts."""
 
@@ -518,7 +519,7 @@ def materialize_world_bank_campaign_v55(
         selection_seed=selection_seed,
     )
     seed_commitment = hashlib.sha256(selection_seed).hexdigest()
-    task_id = f"i34-wb-{seed_commitment[:20]}"
+    task_id = f"{task_iteration_id}-wb-{seed_commitment[:20]}"
     public_count = selection_spec.public_observation_count
     public_times = times[:public_count]
     public_values = transformed[:public_count]
