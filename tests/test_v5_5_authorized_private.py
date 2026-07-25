@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ from fma.v5_5.campaign_protocol import (
     materialize_public_launch_v55,
 )
 from fma.v5_5.split_custody import (
+    EncryptedCustodyEnvelopeV55,
     SourceProvenanceDraftV55,
     create_split_custody_envelopes_v55,
 )
@@ -520,6 +522,23 @@ def test_tampered_budget_claim_file_blocks_target_decryption(
             fixture_only=True,
             evaluated_at=NOW + timedelta(seconds=1),
         )
+
+
+def test_rehashed_tampered_ciphertext_fails_public_custody_binding() -> None:
+    chain = _chain()
+    envelope = chain["private_target_envelope"]
+    payload = envelope.model_dump(exclude={"envelope_hash"})
+    ciphertext = bytearray(base64.b64decode(payload["ciphertext_base64"]))
+    ciphertext[0] ^= 1
+    payload["ciphertext_base64"] = base64.b64encode(ciphertext).decode("ascii")
+    payload["ciphertext_sha256"] = hashlib.sha256(ciphertext).hexdigest()
+    draft = EncryptedCustodyEnvelopeV55(**payload)
+    payload["envelope_hash"] = draft.content_hash()
+    tampered = EncryptedCustodyEnvelopeV55(**payload)
+    kwargs = _precondition_kwargs(chain)
+    kwargs["private_target_envelope"] = tampered
+    with pytest.raises(ValueError, match="split custody bindings"):
+        assert_authorized_encrypted_private_preconditions_v55(**kwargs)
 
 
 def test_prediction_drift_fails_before_target_access() -> None:

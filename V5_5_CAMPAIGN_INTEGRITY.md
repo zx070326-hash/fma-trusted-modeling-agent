@@ -155,7 +155,7 @@ run prospectively to test those properties.
 
 ## Implementation verification
 
-- V5.5 focused tests: `9 passed`
-- V5.3-V5.5 focused compatibility: `25 passed`
-- Required V5 core plus V5.1-V5.5 regression: `90 passed`
-- Full repository regression: `359 passed in 2301.89s`
+- V5.5 focused tests: `20 passed`
+- V5.3-V5.5 focused compatibility: `36 passed`
+- Required V5 core plus V5.1-V5.5 regression: `96 passed`
+- Full repository regression: `370 passed in 2697.69s`
