@@ -1,0 +1,47 @@
+{
+  "schema_version": "fma.iteration_32.status.v1",
+  "campaign_status": "LOCAL_IMPLEMENTATION_READY_EXTERNAL_CAMPAIGN_NOT_RUN",
+  "public_task_selected": false,
+  "protocol_frozen": false,
+  "private_capsule_created": false,
+  "external_worker_run": false,
+  "external_host_attestation_received": false,
+  "external_anchor_content_verified": false,
+  "external_promotion_decision_received": false,
+  "scientific_qualification_granted": false,
+  "real_world_action_authorized": false,
+  "local_capabilities": {
+    "horizon_aligned_l4": true,
+    "final_refit_recertification": true,
+    "ed25519_external_custody": true,
+    "immutable_public_registration": true,
+    "v5_s4_graph_binding": true,
+    "ed25519_external_private_worker": true,
+    "independent_host_management_attestation": true,
+    "signed_external_promotion_contract": true
+  },
+  "validation": {
+    "ruff_check": "PASSED",
+    "focused_v5_3": {
+      "passed": 8,
+      "failed": 0
+    },
+    "directed_regression": {
+      "passed": 73,
+      "failed": 0
+    },
+    "full_suite": {
+      "passed": 342,
+      "failed": 0,
+      "skipped": 0,
+      "runtime_seconds": 2313.3
+    },
+    "source_manifest": "SOURCE_MANIFEST.json"
+  },
+  "evidence_scope": "local_fixture_and_protocol_mechanics_only",
+  "claim_limits": {
+    "general_modeling_capability_proven": false,
+    "real_ode_scientific_result": false,
+    "external_private_qualification": false
+  }
+}

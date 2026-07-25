@@ -1,0 +1,99 @@
+{
+  "schema_version": "fma.iteration_32.protocol_template.v1",
+  "status": "UNFROZEN_TEMPLATE",
+  "objective": "Qualify one genuinely unseen scalar-ODE forecast through horizon-aligned public evidence, a separately administered private evaluator, and an independent signed promotion decision.",
+  "task": {
+    "task_id": null,
+    "public_source": null,
+    "private_source": null,
+    "forecast_targets": [],
+    "selection_rule": "The task and target schema are frozen before generation; the custodian commits the private capsule before the generator is released.",
+    "reuse_forbidden": [
+      "iteration_30 synthetic ODE fixture",
+      "iteration_31 United States population 1980-2020 holdout",
+      "any task or target values visible in prior model context"
+    ]
+  },
+  "public_evidence": {
+    "required": [
+      "sealed ODETimeSeriesSnapshotV52",
+      "sealed ODEThresholdsV52",
+      "sealed ODEForecastPlanV53",
+      "two identical fresh V5.3 replay hashes",
+      "passing V5.3 development assessment",
+      "passing final-refit recertification for every target horizon",
+      "immutable PredictionRegistrationV53",
+      "current authenticated V5 S4 gate",
+      "verified I32GraphBindingV53"
+    ],
+    "candidate_selection": "Candidate family is selected only on the chronological public development split.",
+    "final_refit": "The selected family is locked, refit once on all public data, and the exact refit predictions are horizon-checked and registered."
+  },
+  "private_custody": {
+    "required": [
+      "PrivateScoreContractV53 frozen before private source access",
+      "private capsule created only on the custodian host",
+      "Ed25519 ExternalCustodyAttestationV53",
+      "custodian host distinct from generator and coordinator",
+      "generator egress denied until prediction registration",
+      "external anchor receipt retained and independently verified"
+    ],
+    "coordinator_may_receive": [
+      "score contract",
+      "capsule commitment",
+      "public custody attestation",
+      "pinned public keys"
+    ],
+    "coordinator_may_not_receive": [
+      "private target values",
+      "private capsule bytes",
+      "secrecy canary",
+      "custodian private key",
+      "worker private key",
+      "host-attester private key",
+      "promotion private key"
+    ]
+  },
+  "private_evaluation": {
+    "maximum_evaluations": 1,
+    "required": [
+      "PrivateEvaluationRequestV53 bound to graph, registration, score contract, and capsule commitment",
+      "ExternalPrivateWorkerReceiptV53 from the custodian host",
+      "ExternalWorkerHostAttestationV53 from an independent host-management key",
+      "ExternalPrivateRunVerificationV53 with pinned public keys"
+    ],
+    "feedback": "One aggregate quality score and threshold result only; no target values, per-target errors, gradients, rankings, canary, or retry advice."
+  },
+  "promotion": {
+    "required": [
+      "passing non-fixture public scientific evidence",
+      "current V5 graph binding",
+      "verified immutable prediction registration",
+      "verified private run and threshold pass",
+      "independently verified external anchor chronology",
+      "no integrity incident",
+      "promotion key distinct from custody, worker, and host-management keys",
+      "signed ExternalPromotionDecisionV53"
+    ],
+    "missing_evidence_status": "NOT_RUN_OR_REJECTED",
+    "scientific_qualification_granted": false,
+    "real_world_action_authorized": false
+  },
+  "stop_conditions": [
+    "any private value, canary, or private key reaches generator/coordinator storage",
+    "any public or private content hash differs",
+    "the V5 S4 gate is missing or stale",
+    "any signer key is unpinned, reused across authority roles, or invalid",
+    "any requested target horizon lacks complete V5.3 robustness evidence",
+    "the single private evaluation is consumed, fails, or times out",
+    "an integrity incident is recorded"
+  ],
+  "claim_limits": {
+    "template_is_frozen_protocol": false,
+    "local_fixture_tests_are_scientific_evidence": false,
+    "same_host_process_is_external_qualification": false,
+    "qualification_granted": false,
+    "real_world_action_authorized": false
+  }
+}
+

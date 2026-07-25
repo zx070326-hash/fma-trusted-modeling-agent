@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fma-trusted-kernel"
+version = "0.3.0"
+description = "A graph-native trustworthy kernel and staged workspace for mathematical modeling"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42",
+  "numpy>=2.0",
+  "pydantic>=2.10",
+  "scipy>=1.14",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["fma*"]
+
+[tool.setuptools.package-data]
+fma = [
+  "prompts/*.md",
+  "v5/task_template/*",
+  "v5/task_template/gates/*",
+  "v5/task_template/skills/*/*",
+]
