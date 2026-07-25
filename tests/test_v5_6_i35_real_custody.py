@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 from fma.hashing import sha256_value
 from fma.v5_5.public_ode_campaign import verify_public_launch_v55
+from fma.v5_6.public_hybrid_campaign import (
+    HybridCampaignProtocolV56,
+    HybridForecastPlanV56,
+    load_hybrid_thresholds_v56,
+    materialize_hybrid_forecast_plan_v56,
+)
 from fma.v5_6.unseen_source import verify_unseen_world_bank_campaign_v56
 
 
@@ -78,3 +85,35 @@ def test_i35_custodian_execution_receipt_binds_frozen_source_commit() -> None:
     assert receipt["external_host_established"] is False
     assert receipt["scientific_qualification_granted"] is False
     assert receipt["real_world_action_authorized"] is False
+
+
+def test_i35_forecast_plan_was_frozen_before_public_model_run() -> None:
+    science = I35 / "scientific"
+    protocol = HybridCampaignProtocolV56.model_validate_json(
+        (science / "HYBRID_CAMPAIGN_PROTOCOL_V56.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    thresholds = load_hybrid_thresholds_v56(
+        science / "HYBRID_THRESHOLDS_V56.json"
+    )
+    plan = HybridForecastPlanV56.model_validate_json(
+        (science / "HYBRID_FORECAST_PLAN_V56.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plan.assert_sealed()
+    replayed = materialize_hybrid_forecast_plan_v56(
+        unseen_campaign_dir=CAMPAIGN,
+        protocol=protocol,
+        thresholds=thresholds,
+        frozen_at=datetime.fromisoformat("2026-07-26T07:36:00+08:00"),
+    )
+    assert plan == replayed
+    assert plan.private_target_values_accessed is False
+    assert [item.target_id for item in plan.targets] == [
+        "target-h1",
+        "target-h2",
+        "target-h3",
+        "target-h4",
+    ]
