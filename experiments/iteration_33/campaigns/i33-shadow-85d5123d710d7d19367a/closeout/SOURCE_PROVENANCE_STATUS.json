@@ -1,0 +1,28 @@
+{
+  "schema_version": "fma.iteration_33.source_provenance_status.v1",
+  "campaign_id": "i33-shadow-85d5123d710d7d19367a",
+  "status": "BLOCKED_NOT_RUN",
+  "required_disclosure": [
+    "primary source identity and locator",
+    "table or series identity",
+    "public and private date ranges",
+    "evidence that the source series and target interval were excluded from earlier campaigns"
+  ],
+  "available_without_decryption": [
+    "signed custody attestation",
+    "commitment to an encrypted capsule",
+    "blinded public series",
+    "assertion of fresh source sequence and target interval"
+  ],
+  "missing_without_decryption": [
+    "exact source identity and locator",
+    "table or series identity",
+    "exact unblinded date ranges"
+  ],
+  "blocking_condition": "The missing provenance metadata was not separately sealed before modeling and is only available inside the encrypted custody capsule.",
+  "private_capsule_decrypted": false,
+  "private_target_values_accessed": false,
+  "private_evaluation_budget_consumed": 0,
+  "claim_limit": "Do not describe the exact source as independently or publicly verified.",
+  "remediation_for_future_campaigns": "Before public release, create a separately encrypted provenance envelope with an independent metadata-only release key and a signed commitment. Keep private target values in a different ciphertext and key domain."
+}

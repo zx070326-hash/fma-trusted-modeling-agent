@@ -30,3 +30,7 @@ htmlcov/
 !/experiments/iteration_32/**
 !/experiments/iteration_33/
 !/experiments/iteration_33/**
+
+# Keep runtime caches ignored inside explicitly included campaign trees.
+/experiments/iteration_33/**/__pycache__/
+/experiments/iteration_33/**/*.py[cod]

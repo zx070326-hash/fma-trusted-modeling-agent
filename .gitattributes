@@ -1,0 +1,2 @@
+# Iteration 33 manifests bind exact file bytes; never rewrite line endings.
+/experiments/iteration_33/** -text
