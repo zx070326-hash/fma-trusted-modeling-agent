@@ -134,6 +134,17 @@ The disclosure receipt permanently records
 record, ciphertext commitment, custody signature, terminal-evidence binding,
 closeout signature, and disclosure receipt without any decryption key.
 
+## Authorized encrypted private evaluation
+
+The original V5.5 custody layer did not itself connect V5.4 authorization to
+the V5.3 private-worker CLI. The additive authorized path now performs a
+deterministic replay of public eligibility, verifies the exact launch and both
+custody generations, atomically consumes the single private-evaluation budget,
+and only then reads the target AES key. Its worker-signed wrapper binds the
+historical V5.3 aggregate receipt without changing that receipt.
+
+See [V5.5 authorized encrypted private chain](V5_5_AUTHORIZED_PRIVATE_CHAIN.md).
+
 ## Claim boundary
 
 V5.5 closes protocol-identity and provenance-release mechanics. Local tests use
