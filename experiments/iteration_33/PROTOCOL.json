@@ -1,0 +1,72 @@
+{
+  "schema_version": "fma.iteration_33.protocol.v1",
+  "status": "FROZEN_BEFORE_TASK_SELECTION",
+  "objective": "Prospectively test whether V5.4 public stability eligibility prevents an unstable model from consuming one blinded private evaluation.",
+  "source_commit": "c1829a92d9ebe02d5612672fd75b7ab963afbb12",
+  "task_rules": {
+    "real_scalar_time_series_required": true,
+    "minimum_public_observations": 28,
+    "private_target_count": 4,
+    "forecast_horizons": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "source_identity_withheld_until_campaign_close": true,
+    "positive_affine_value_blinding_allowed": true,
+    "additive_time_blinding_allowed": true,
+    "reuse_forbidden": [
+      "all Iteration 30 and Iteration 31 tasks",
+      "Iteration 32 campaign i32-shadow-177747afada8fc62a6ed",
+      "the same raw source series or target interval as any earlier campaign"
+    ]
+  },
+  "public_modeling": {
+    "maximum_candidate_search_count": 16,
+    "baseline_id": "persistence_last_value",
+    "minimum_candidate_families": 3,
+    "graph_recovery_required_after_initial_family_failure": true,
+    "selection_uses_public_data_only": true,
+    "final_family_locked_before_all_public_refit": true,
+    "one_frozen_submission": true
+  },
+  "v5_4_public_eligibility": {
+    "minimum_origin_count": 12,
+    "contiguous_time_block_count": 3,
+    "recent_origin_count": 4,
+    "minimum_overall_advantage": 0.0,
+    "minimum_time_block_advantage": 0.0,
+    "minimum_recent_advantage": 0.0,
+    "minimum_horizon_advantage": 0.0,
+    "minimum_origin_win_fraction": 0.6,
+    "bootstrap_confidence": 0.95,
+    "bootstrap_replicates": 8192,
+    "bootstrap_block_length": 4,
+    "multiplicity_correction_count": 16,
+    "bootstrap_seed": 5417,
+    "requires_public_scientific_acceptance": true,
+    "fixture_allowed": false,
+    "all_checks_required": true,
+    "failed_decision": "ABSTAIN",
+    "abstention_consumes_private_budget": false
+  },
+  "private_evaluation": {
+    "maximum_evaluations": 1,
+    "requires_authenticated_v5_4_eligibility": true,
+    "feedback": "one aggregate score and threshold result only",
+    "same_task_retry_after_score": false
+  },
+  "isolation": {
+    "current_mode": "same_host_blinded_context_shadow",
+    "external_host_established": false,
+    "scientific_qualification_possible": false,
+    "remote_upgrade_rule": "A later external run requires a different physical host, independent management keys, and a signed promotion decision."
+  },
+  "claim_limits": {
+    "public_eligibility_is_scientific_qualification": false,
+    "shadow_private_pass_is_external_qualification": false,
+    "scientific_qualification_granted": false,
+    "real_world_action_authorized": false
+  }
+}

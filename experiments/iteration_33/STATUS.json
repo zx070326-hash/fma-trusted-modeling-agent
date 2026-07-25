@@ -1,0 +1,14 @@
+{
+  "schema_version": "fma.iteration_33.status.v1",
+  "campaign_status": "PROTOCOL_FROZEN_TASK_NOT_SELECTED",
+  "protocol_sha256": "bdc701dcb081ecea3d752463b199a25d17dffacbdd6918509a1b543b87bc011b",
+  "task_selected": false,
+  "public_packet_released": false,
+  "public_modeling_completed": false,
+  "v5_4_public_eligibility_decision": "NOT_RUN",
+  "private_evaluation_budget_consumed": 0,
+  "private_evaluation_completed": false,
+  "external_host_established": false,
+  "scientific_qualification_granted": false,
+  "real_world_action_authorized": false
+}

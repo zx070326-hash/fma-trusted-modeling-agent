@@ -28,3 +28,5 @@ htmlcov/
 /experiments/*
 !/experiments/iteration_32/
 !/experiments/iteration_32/**
+!/experiments/iteration_33/
+!/experiments/iteration_33/**
