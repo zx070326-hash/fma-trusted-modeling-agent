@@ -55,7 +55,7 @@
     "result_file": "campaigns/i32-shadow-177747afada8fc62a6ed/CAMPAIGN_RESULT.json",
     "scientific_qualification_granted": false
   },
-  "evidence_scope": "local_fixture_and_protocol_mechanics_only",
+  "evidence_scope": "local_fixture_protocol_and_blinded_context_shadow_only",
   "claim_limits": {
     "general_modeling_capability_proven": false,
     "real_ode_scientific_result": false,
