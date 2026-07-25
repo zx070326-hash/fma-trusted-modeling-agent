@@ -90,3 +90,10 @@ rejection, late-regime collapse, bootstrap-only rejection, fixture and
 scientific-assessment rejection, incomplete grids, frozen search budgets, and
 the I32 counterfactual.
 
+## V5.5 launch integrity
+
+V5.4 assumes its baseline and candidate-policy bindings were frozen correctly.
+V5.5 makes that assumption executable: it derives both artifacts from one
+sealed prospective protocol and separates source-provenance encryption from
+private-target encryption. See
+[`V5_5_CAMPAIGN_INTEGRITY.md`](V5_5_CAMPAIGN_INTEGRITY.md).
