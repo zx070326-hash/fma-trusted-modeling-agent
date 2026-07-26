@@ -15,6 +15,10 @@ from .service import StudioBridgeError, StudioTaskService
 _TASK_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)")
 _RUN_S0_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s0")
 _RUN_S1_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s1")
+_ODE_DATA_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/data/ode")
+_RUN_BACKHALF_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-backhalf"
+)
 
 
 class StudioHTTPServer(ThreadingHTTPServer):
@@ -123,13 +127,24 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("invalid Content-Length") from exc
-        if length <= 0 or length > 32_768:
-            raise ValueError("JSON body must be between 1 and 32768 bytes")
+        if length <= 0 or length > 1_048_576:
+            raise ValueError("JSON body must be between 1 and 1048576 bytes")
         raw = self.rfile.read(length)
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("JSON body must be an object")
         return payload
+
+    def _consume_empty_action_body(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if length == 0:
+            return
+        payload = self._body()
+        if payload:
+            raise ValueError("stage action body must be an empty JSON object")
 
     def do_OPTIONS(self) -> None:
         if not self._origin_allowed():
@@ -193,11 +208,32 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 return
             match = _RUN_S0_ROUTE.fullmatch(path)
             if match:
+                self._consume_empty_action_body()
                 self._send(202, self.server.service.start_s0(match.group(1)))
                 return
             match = _RUN_S1_ROUTE.fullmatch(path)
             if match:
+                self._consume_empty_action_body()
                 self._send(202, self.server.service.start_s1(match.group(1)))
+                return
+            match = _ODE_DATA_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    201,
+                    self.server.service.ingest_ode_data(
+                        match.group(1),
+                        payload,
+                    ),
+                )
+                return
+            match = _RUN_BACKHALF_ROUTE.fullmatch(path)
+            if match:
+                self._consume_empty_action_body()
+                self._send(
+                    202,
+                    self.server.service.start_backhalf(match.group(1)),
+                )
                 return
             self._send(404, {"status": "error", "type": "not_found"})
         except (ValueError, json.JSONDecodeError) as exc:

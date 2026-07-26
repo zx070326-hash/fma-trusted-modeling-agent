@@ -43,7 +43,7 @@ _ARRAY_CAPS = {
     "assumption_ids": 2,
     "assumptions": 2,
     "candidate_family_hints": 8,
-    "data_requirement_ids": 4,
+    "data_requirement_ids": 8,
     "declared_conservation_laws": 4,
     "declared_limit_cases": 4,
     "identifiability_risks": 4,
@@ -68,17 +68,21 @@ _STRING_CAPS = {
     "rationale": 400,
     "required_test": 400,
     "selection_rationale": 1200,
-    "statement": 400,
+    "statement": 1000,
     "target_interpretation": 400,
     "applicability_rule": 1200,
 }
 
 
 def _artifact_types(request: RoleRequestV51) -> list[str] | None:
-    if request.stage not in {"S0", "S1"}:
-        return None
     if request.role_kind == "reviewer":
         return []
+    if request.stage == "S2" and request.role_name == "s2_data_steward":
+        return ["data_mapping"]
+    if request.stage == "S5" and request.role_name == "s5_decision_writer":
+        return ["decision_narrative"]
+    if request.stage not in {"S0", "S1"}:
+        return None
     if request.stage == "S0":
         if request.role_name in {
             "problem_formulator",

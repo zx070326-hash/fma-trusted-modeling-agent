@@ -31,21 +31,23 @@ function StageNavigator({
   selectedStage,
   setSelectedStage,
   completed = false,
-  s0Open = false,
+  stageStatuses,
 }: {
   selectedStage: string;
   setSelectedStage: (stage: string) => void;
   completed?: boolean;
-  s0Open?: boolean;
+  stageStatuses?: Record<string, string>;
 }) {
   return (
     <div className="stage-list" aria-label="S0 到 S6 建模阶段">
       {stages.map((stage, index) => {
         const isActive = selectedStage === stage.id;
+        const stageStatus = stageStatuses?.[stage.id];
         const isLocked =
           !completed &&
-          stage.status === "locked" &&
-          !(stage.id === "S1" && s0Open);
+          stage.id !== "S0" &&
+          !["frontier", "gate_open"].includes(stageStatus ?? "");
+        const gateOpen = stageStatus === "gate_open";
         return (
           <button
             className={`stage-item ${isActive ? "stage-selected" : ""} ${
@@ -57,7 +59,7 @@ function StageNavigator({
             aria-pressed={isActive}
           >
             <span className="stage-marker">
-              {completed ? "✓" : index === 0 ? "●" : index + 1}
+              {completed || gateOpen ? "✓" : index === 0 ? "●" : index + 1}
             </span>
             <span className="stage-copy">
               <strong>
@@ -186,6 +188,162 @@ function S1Workspace({ bridge }: { bridge: StudioBridge }) {
             本阶段不能自行授予科学支持。
           </p>
         )}
+      </section>
+    </div>
+  );
+}
+
+function BackhalfWorkspace({
+  bridge,
+  stageId,
+}: {
+  bridge: StudioBridge;
+  stageId: string;
+}) {
+  const [dataJson, setDataJson] = useState("");
+  const [localError, setLocalError] = useState("");
+  const backhalf = bridge.task?.backhalf;
+  const running = bridge.task
+    ? ["accepted", "running"].includes(bridge.task.activity)
+    : false;
+  const workflowComplete = backhalf?.workflow_complete ?? false;
+
+  const freezeData = async () => {
+    setLocalError("");
+    try {
+      const parsed = JSON.parse(dataJson) as Record<string, unknown>;
+      await bridge.ingestOdeData(parsed);
+    } catch (reason) {
+      setLocalError(
+        reason instanceof Error ? reason.message : "无法解析或冻结 ODE 数据",
+      );
+    }
+  };
+
+  return (
+    <div className="backhalf-workspace">
+      <section className="work-hero">
+        <div className="work-hero-copy">
+          <div className="section-kicker">
+            <span>EXECUTABLE BACK HALF · {stageId}</span>
+            <Pill tone={workflowComplete ? "green" : "blue"}>
+              {workflowComplete ? "S2–S6 COMPLETE" : "NARROW ODE PATH"}
+            </Pill>
+          </div>
+          <h1>先把证据链跑到底，<br />再提升候选质量。</h1>
+          <p>
+            当前生产级适配器只接受正值标量时间序列，并在固定的 constant、
+            exponential、gompertz、logistic 候选族上执行 L0–L4。
+            S1 若没有明确选择兼容的自治 ODE 形式，链路会拒绝启动。
+          </p>
+        </div>
+      </section>
+
+      <section className="work-card backhalf-intake-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">S2 · DATA FREEZE</span>
+            <h2>冻结真实序列与来源</h2>
+          </div>
+          <Pill tone={backhalf?.data_received ? "green" : "amber"}>
+            {backhalf?.data_received ? "DATA RECEIVED" : "INPUT REQUIRED"}
+          </Pill>
+        </div>
+        <label className="objective-field">
+          <span>ODE 数据 JSON</span>
+          <textarea
+            value={dataJson}
+            onChange={(event) => {
+              setDataJson(event.target.value);
+              setLocalError("");
+            }}
+            disabled={backhalf?.data_received}
+            placeholder={`{
+  "time_unit": "day",
+  "state_unit": "count",
+  "times": [0, 1, 2, "...至少 12 个严格递增时间点"],
+  "observations": [5.1, 6.2, 7.4, "...对应的正值观测"],
+  "source_id": "你的数据来源",
+  "license_status": "user-provided",
+  "fixture_only": false
+}`}
+            rows={12}
+            spellCheck={false}
+          />
+          <small>
+            Harness 会先写入原始文件并记录哈希；数据冻结后不能覆盖，只能通过图上的撤销与新尝试恢复。
+          </small>
+        </label>
+        <div className="backhalf-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={
+              bridge.busy ||
+              running ||
+              Boolean(backhalf?.data_received) ||
+              !dataJson.trim()
+            }
+            onClick={() => void freezeData()}
+          >
+            仅冻结并审计数据
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={
+              bridge.busy ||
+              running ||
+              !backhalf?.data_received ||
+              workflowComplete
+            }
+            onClick={() => void bridge.runBackhalf()}
+          >
+            {running ? "S2–S6 正在运行…" : "运行 S2–S6"}
+            <span aria-hidden="true">→</span>
+          </button>
+        </div>
+        {(localError || bridge.error) && (
+          <p className="bridge-error">{localError || bridge.error}</p>
+        )}
+      </section>
+
+      <section className="work-card backhalf-evidence-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">LIVE EVIDENCE</span>
+            <h2>阶段、科学检查与权限分开显示</h2>
+          </div>
+          <Pill tone={backhalf?.scientific_acceptance ? "green" : "amber"}>
+            {backhalf?.scientific_acceptance
+              ? "PUBLIC SCIENCE PASS"
+              : "NOT ESTABLISHED"}
+          </Pill>
+        </div>
+        <div className="backhalf-stage-grid">
+          {["S2", "S3", "S4", "S5", "S6"].map((stage) => (
+            <article key={stage}>
+              <span>{stage}</span>
+              <strong>
+                {bridge.task?.workflow.stage_statuses[stage] ?? "locked"}
+              </strong>
+            </article>
+          ))}
+        </div>
+        <div className="backhalf-level-grid">
+          {["L0", "L1", "L2", "L3", "L4"].map((level) => (
+            <article key={level}>
+              <span>{level}</span>
+              <strong>{backhalf?.level_statuses[level] ?? "NOT RUN"}</strong>
+            </article>
+          ))}
+        </div>
+        <div className="truth-note">
+          <span aria-hidden="true">i</span>
+          selected family: {backhalf?.selected_scientific_family ?? "not run"} ·
+          fixture only: {String(backhalf?.fixture_only ?? "unknown")} · scientific
+          qualification: false · real-world action: false
+        </div>
       </section>
     </div>
   );
@@ -368,7 +526,7 @@ function IntakeWorkspace({
                 }
               >
                 {s1Open
-                  ? "S2 数据冻结待下一轮"
+                  ? "前往 S2 冻结 ODE 数据"
                   : agentRunning
                     ? `Codex 正在完成 ${s0Open ? "S1" : "S0"}…`
                     : s0Open
@@ -569,8 +727,8 @@ function ContextRail({ bridge }: { bridge: StudioBridge }) {
         </strong>
         <p>
           {bridge.connected
-            ? "网页现在可以启动真实 S0，并在 Gate 打开后执行四分支盲探索、受控知识共享和独立双审的 S1。"
-            : "在本机启动 Studio Bridge 后，网页可以让 Codex 完成受控 S0–S1；S2–S6 仍按阶段接入。"}
+            ? "网页可以启动真实 S0–S1，并在兼容的正值标量 ODE 任务上执行受控 S2–S6。"
+            : "启动本地 Studio Bridge 后，可执行 S0–S1 与正值标量 ODE 的 S2–S6 窄域链路。"}
         </p>
       </section>
     </aside>
@@ -742,7 +900,7 @@ export default function Home() {
           <span className="brand-mark">F</span>
           <span>
             <strong>FMA</strong>
-            <small>MODELING STUDIO · V5.8</small>
+            <small>MODELING STUDIO · V5.9</small>
           </span>
         </button>
 
@@ -775,7 +933,7 @@ export default function Home() {
           <span>
             {bridge.connected ? "本地内核已连接" : "前端已就绪"}
             <small>
-              {bridge.connected ? "S0–S1 真实执行可用" : "执行服务待连接"}
+              {bridge.connected ? "S0–S6 窄域执行可用" : "执行服务待连接"}
             </small>
           </span>
         </div>
@@ -829,9 +987,7 @@ export default function Home() {
             if (viewingCompletedTask) setView("workspace");
           }}
           completed={false}
-          s0Open={
-            bridge.task?.workflow.stage_statuses.S0 === "gate_open"
-          }
+          stageStatuses={bridge.task?.workflow.stage_statuses}
         />
 
         <div className="sidebar-foot">
@@ -854,6 +1010,9 @@ export default function Home() {
               ) : selectedStage === "S1" &&
                 bridge.task?.workflow.stage_statuses.S0 === "gate_open" ? (
                 <S1Workspace bridge={bridge} />
+              ) : ["S2", "S3", "S4", "S5", "S6"].includes(selectedStage) &&
+                bridge.task?.workflow.stage_statuses.S1 === "gate_open" ? (
+                <BackhalfWorkspace bridge={bridge} stageId={selectedStage} />
               ) : (
                 <LockedStage
                   stageId={selectedStage}

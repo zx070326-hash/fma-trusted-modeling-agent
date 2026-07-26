@@ -40,6 +40,18 @@ export type TaskSnapshot = {
     cross_task_experience_count: number;
     cross_task_use_permitted: boolean;
   } | null;
+  backhalf: {
+    schema_version: "5.9";
+    adapter_id: "scalar_autonomous_ode_v52";
+    data_received: boolean;
+    workflow_complete: boolean;
+    selected_scientific_family: string | null;
+    level_statuses: Record<string, string>;
+    scientific_acceptance: boolean;
+    fixture_only: boolean | null;
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
   next_valid_actions: string[];
   scientific_qualification_granted: false;
   real_world_action_authorized: false;
@@ -187,6 +199,47 @@ export function useStudioBridge() {
     }
   }, [request, task]);
 
+  const ingestOdeData = useCallback(
+    async (payload: Record<string, unknown>) => {
+      if (!task) throw new Error("请先完成 S0–S1，再冻结 ODE 数据。");
+      setBusy(true);
+      setError("");
+      try {
+        const snapshot = await request<TaskSnapshot>(
+          `/api/v1/tasks/${encodeURIComponent(task.task_id)}/data/ode`,
+          { method: "POST", body: JSON.stringify(payload) },
+        );
+        setTask(snapshot);
+        return snapshot;
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "ODE 数据冻结失败");
+        throw reason;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [request, task],
+  );
+
+  const runBackhalf = useCallback(async () => {
+    if (!task) throw new Error("请先完成 S0–S1 并冻结 ODE 数据。");
+    setBusy(true);
+    setError("");
+    try {
+      const snapshot = await request<TaskSnapshot>(
+        `/api/v1/tasks/${encodeURIComponent(task.task_id)}/run-backhalf`,
+        { method: "POST", body: "{}" },
+      );
+      setTask(snapshot);
+      return snapshot;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "S2–S6 启动失败");
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  }, [request, task]);
+
   const refresh = useCallback(async () => {
     if (!task) return null;
     try {
@@ -223,6 +276,8 @@ export function useStudioBridge() {
     createTask,
     runS0,
     runS1,
+    ingestOdeData,
+    runBackhalf,
     refresh,
   };
 }

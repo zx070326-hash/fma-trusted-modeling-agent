@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import urllib.error
@@ -147,6 +148,51 @@ def _s1_draft(request):
                 "The candidate frontier, epistemic exchange, and validation "
                 "duties are bounded and do not claim scientific acceptance."
             ),
+        )
+    if request.role_name == "s2_data_steward":
+        required_ids = request.public_inputs["required_data_requirement_ids"]
+        mapping = {
+            "schema_version": "5.9",
+            "data_requirement_ids": required_ids,
+            "semantic_name": "positive scalar state observations over time",
+            "units": request.public_inputs["data_summary"]["state_unit"],
+            "transform_rule": (
+                "Preserve the frozen time and observation arrays byte-for-byte "
+                "inside the registered scalar ODE snapshot."
+            ),
+            "quality_flags": ["fixture_role_did_not_assess_source_quality"],
+        }
+        return _role_draft(
+            request,
+            selected_candidate_id=request.allowed_candidate_ids[0],
+            artifacts=[
+                {
+                    "artifact_type": "data_mapping",
+                    "content": canonical_json(mapping),
+                }
+            ],
+        )
+    if request.role_name == "s5_decision_writer":
+        narrative = {
+            "schema_version": "5.9",
+            "statement": (
+                "The registered scalar ODE ensemble supports only the frozen "
+                "reporting target and remains subject to the bound uncertainty."
+            ),
+            "limitations": [
+                "Fixture evidence does not establish external scientific validity.",
+                "No real-world action is authorized.",
+            ],
+        }
+        return _role_draft(
+            request,
+            selected_candidate_id=request.allowed_candidate_ids[0],
+            artifacts=[
+                {
+                    "artifact_type": "decision_narrative",
+                    "content": canonical_json(narrative),
+                }
+            ],
         )
     if request.role_name == "s1_prior_model_scout":
         report = {
@@ -412,6 +458,32 @@ def _s1_draft(request):
     )
 
 
+def _ode_backhalf_draft(request):
+    payload = _s1_draft(request)
+    if request.role_name in {
+        "s1_candidate_synthesizer",
+        "s1_candidate_synthesizer_repair",
+    }:
+        for artifact in payload["proposed_artifacts"]:
+            if artifact["artifact_type"] == "selected_candidate_structure":
+                structure = json.loads(artifact["content"])
+                structure["model_family"] = (
+                    "registered scalar autonomous ODE model-selection family"
+                )
+                structure["data_requirement_ids"] = ["ode.scalar_series"]
+                artifact["content"] = canonical_json(structure)
+            elif artifact["artifact_type"] == "selected_mathematical_form":
+                mathematical_form = json.loads(artifact["content"])
+                mathematical_form["mathematical_form"] = (
+                    "Select by frozen development loss among dx/dt = 0, "
+                    "dx/dt = r*x, dx/dt = r*x*log(K/x), and "
+                    "dx/dt = r*x*(1-x/K); fit only on the frozen series and "
+                    "evaluate all L0-L4 obligations without post-result tuning."
+                )
+                artifact["content"] = canonical_json(mathematical_form)
+    return payload
+
+
 def _service(tmp_path: Path, draft_factory=_valid_draft) -> StudioTaskService:
     return StudioTaskService(
         tmp_path / "tasks",
@@ -485,7 +557,7 @@ def test_s1_runs_parallel_branches_broker_translation_and_dual_review(
 
     assert result["workflow"]["stage_statuses"]["S1"] == "gate_open"
     assert result["workflow"]["frontier_stages"] == ["S2"]
-    assert result["next_valid_actions"] == ["inspect_s1", "continue_s2"]
+    assert result["next_valid_actions"] == ["inspect_s1", "ingest_ode_data"]
     epistemic = result["epistemic"]
     assert epistemic["schema_version"] == "5.8"
     assert epistemic["branch_count"] == 4
@@ -725,6 +797,97 @@ def test_invalid_agent_artifacts_fail_before_stage_files_exist(
     assert not (root / "problem" / "decision_function.json").exists()
     assert not (root / "docs" / "regime.json").exists()
     assert service.snapshot("bad-s0")["workflow"]["frontier_stages"] == ["S0"]
+
+
+def _ode_data_payload(*, fixture_only: bool = True) -> dict[str, object]:
+    times = [index * 0.5 for index in range(36)]
+    observations = [
+        100.0
+        / (1.0 + 19.0 * math.exp(-0.45 * time))
+        * (1.0 + 0.006 * math.sin(index * 1.7))
+        for index, time in enumerate(times)
+    ]
+    return {
+        "schema_version": "5.9",
+        "adapter_id": "scalar_autonomous_ode_v52",
+        "time_unit": "day",
+        "state_unit": "count",
+        "times": times,
+        "observations": observations,
+        "source_id": "deterministic-logistic-control",
+        "license_status": "test-fixture",
+        "fixture_only": fixture_only,
+    }
+
+
+def test_registered_ode_path_runs_s2_through_s6_without_claiming_authority(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _ode_backhalf_draft)
+    service.create_task(
+        {
+            "objective": (
+                "Forecast the next positive scalar population observation from "
+                "a frozen time series and report the uncertainty interval."
+            ),
+            "workspace_id": "ode-backhalf",
+        }
+    )
+    service.run_s0("ode-backhalf")
+    service.run_s1("ode-backhalf")
+
+    intake = service.ingest_ode_data(
+        "ode-backhalf",
+        _ode_data_payload(),
+    )
+    assert intake["backhalf"]["data_received"] is True
+    assert intake["workflow"]["stage_statuses"]["S2"] == "frontier"
+    assert intake["next_valid_actions"] == ["inspect_s1", "run_backhalf"]
+
+    result = service.run_backhalf("ode-backhalf")
+
+    assert all(
+        result["workflow"]["stage_statuses"][stage] == "gate_open"
+        for stage in ("S0", "S1", "S2", "S3", "S4", "S5", "S6")
+    )
+    assert result["backhalf"]["workflow_complete"] is True
+    assert result["backhalf"]["selected_scientific_family"] == "logistic"
+    assert result["backhalf"]["level_statuses"] == {
+        "L0": "PASS",
+        "L1": "PASS",
+        "L2": "PASS",
+        "L3": "PASS",
+        "L4": "PASS",
+    }
+    assert result["backhalf"]["scientific_acceptance"] is True
+    assert result["backhalf"]["fixture_only"] is True
+    assert result["scientific_qualification_granted"] is False
+    assert result["real_world_action_authorized"] is False
+    root = tmp_path / "tasks" / "ode-backhalf"
+    assert (root / "paper" / "build" / "main.pdf").is_file()
+    assert (root / "paper" / "build" / "build_receipt.json").is_file()
+
+
+def test_backhalf_fails_closed_without_data(tmp_path: Path) -> None:
+    service = _service(tmp_path, _ode_backhalf_draft)
+    service.create_task({"objective": OBJECTIVE, "workspace_id": "ode-no-data"})
+    service.run_s0("ode-no-data")
+    service.run_s1("ode-no-data")
+
+    with pytest.raises(StudioValidationError, match="user-supplied"):
+        service.run_backhalf("ode-no-data")
+
+
+def test_ode_intake_rejects_an_incompatible_s1_candidate(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, _s1_draft)
+    service.create_task({"objective": OBJECTIVE, "workspace_id": "not-ode"})
+    service.run_s0("not-ode")
+    service.run_s1("not-ode")
+
+    with pytest.raises(StudioValidationError, match="not compatible"):
+        service.ingest_ode_data("not-ode", _ode_data_payload())
 
 
 def test_s0_uses_one_bounded_repair_after_typed_rejection(

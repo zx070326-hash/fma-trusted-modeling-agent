@@ -21,6 +21,11 @@ create task
   → mechanical check
   → fresh independent referee
   → harness-owned S0 gate
+  → graph-native S1 candidate frontier and independent review
+  → user-supplied positive scalar ODE data freeze
+  → registered S2–S6 computation, L0–L4 checks, dossier, and PDF
 ```
 
-S1–S6、数据上传和远程执行尚未接通，界面必须继续按真实状态显示为不可用。
+后半链路只支持至少 12 个严格递增时间点的正值标量序列，以及
+`scalar_autonomous_ode_v52` 注册候选族。任意模型、文件上传、远程执行、外部私测、
+科学资格和现实行动授权尚未接通，界面必须继续按真实状态显示。

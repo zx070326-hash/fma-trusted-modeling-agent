@@ -37,10 +37,10 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       images: [
         {
-          url: new URL("/og.png", base).toString(),
-          width: 1792,
-          height: 909,
-          alt: "FMA 数学建模智能体：从真实问题到可信交付",
+          url: new URL("/og-v59.png", base).toString(),
+          width: 1672,
+          height: 941,
+          alt: "FMA V5.9：先跑完证据链，再提升候选质量",
         },
       ],
     },
@@ -48,7 +48,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title,
       description,
-      images: [new URL("/og.png", base).toString()],
+      images: [new URL("/og-v59.png", base).toString()],
     },
   };
 }

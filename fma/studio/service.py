@@ -1,9 +1,10 @@
 """Typed local service that connects the web studio to the FMA V5 kernel.
 
 The browser never receives the V5 authority key and cannot write graph state
-directly.  It may request a task or bounded S0/S1 runs; this service validates
-the request, invokes isolated Codex role processes, and asks the existing
-harness to authenticate checks, reviews, and graph transitions.
+directly.  It may request a task, bounded S0/S1 discovery, or the registered
+positive-scalar-ODE S2--S6 path.  This service validates the request, invokes
+isolated Codex role processes, and asks the existing harness to authenticate
+checks, reviews, and graph transitions.
 """
 
 from __future__ import annotations
@@ -45,6 +46,13 @@ from fma.v5_1.codex_stage_driver import (
 from fma.v5_8.epistemic import EpistemicGraphStoreV58
 from fma.v5_8.stage_driver import CodexStageRoleTransportV58
 
+from .backhalf_runtime import (
+    BackhalfRuntimeError,
+    StudioBackhalfOrchestratorV59,
+    StudioODEDataRequestV59,
+    backhalf_summary_v59,
+    ingest_ode_data_v59,
+)
 from .s1_runtime import S1RuntimeError, StudioS1OrchestratorV58
 
 
@@ -363,8 +371,25 @@ class StudioTaskService:
         events = self._events(task_id)
         s0_open = workspace.current_gate("S0") is not None
         s1_open = workspace.current_gate("S1") is not None
+        s6_open = workspace.current_gate("S6") is not None
+        backhalf = backhalf_summary_v59(workspace)
         with self._lock:
             active = task_id in self._active_tasks
+        if active:
+            next_valid_actions: list[str] = []
+        elif s6_open:
+            next_valid_actions = ["inspect_s6"]
+        elif s1_open:
+            next_valid_actions = ["inspect_s1"]
+            next_valid_actions.append(
+                "run_backhalf"
+                if backhalf["data_received"]
+                else "ingest_ode_data"
+            )
+        elif s0_open:
+            next_valid_actions = ["inspect_s0", "run_s1"]
+        else:
+            next_valid_actions = ["run_s0"]
         return {
             "status": "success",
             "task_id": task_id,
@@ -375,17 +400,8 @@ class StudioTaskService:
             else (events[-1].status if events else "idle"),
             "events": [event.model_dump(mode="json") for event in events[-30:]],
             "epistemic": EpistemicGraphStoreV58(workspace.root).summary(),
-            "next_valid_actions": (
-                []
-                if active
-                else (
-                    ["inspect_s1", "continue_s2"]
-                    if s1_open
-                    else ["inspect_s0", "run_s1"]
-                    if s0_open
-                    else ["run_s0"]
-                )
-            ),
+            "backhalf": backhalf,
+            "next_valid_actions": next_valid_actions,
             "scientific_qualification_granted": False,
             "real_world_action_authorized": False,
         }
@@ -872,6 +888,140 @@ class StudioTaskService:
         thread = threading.Thread(
             target=worker,
             name=f"fma-studio-{task_id}-s1",
+            daemon=True,
+        )
+        thread.start()
+        return self.snapshot(task_id)
+
+    def ingest_ode_data(
+        self,
+        task_id: str,
+        request: StudioODEDataRequestV59 | dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self._workspace(task_id)
+        try:
+            validated = (
+                request
+                if isinstance(request, StudioODEDataRequestV59)
+                else StudioODEDataRequestV59.model_validate(request)
+            )
+        except ValueError as exc:
+            raise StudioValidationError(str(exc)) from exc
+        with self._lock:
+            if task_id in self._active_tasks:
+                raise StudioConflictError("task already has an active stage run")
+            try:
+                raw_path = ingest_ode_data_v59(workspace, validated)
+            except (BackhalfRuntimeError, ValidationError) as exc:
+                raise StudioValidationError(str(exc)) from exc
+            self._append_event(
+                task_id,
+                event_type="s2_raw_data_received",
+                status="succeeded",
+                message=(
+                    "Positive scalar ODE data were received; S2 remains unfrozen"
+                ),
+                details={
+                    "adapter_id": validated.adapter_id,
+                    "point_count": len(validated.times),
+                    "raw_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+                    "fixture_only": validated.fixture_only,
+                    "scientific_qualification_granted": False,
+                    "real_world_action_authorized": False,
+                },
+            )
+        return self.snapshot(task_id)
+
+    def _backhalf_orchestrator(
+        self,
+        task_id: str,
+        workspace: StageWorkspaceV50,
+    ) -> StudioBackhalfOrchestratorV59:
+        return StudioBackhalfOrchestratorV59(
+            workspace=workspace,
+            task_id=task_id,
+            driver_factory=lambda: StageRoleDriverV51(self._transport(task_id)),
+            event_callback=lambda event_type, status, message, details: (
+                self._append_event(
+                    task_id,
+                    event_type=event_type,
+                    status=status,
+                    message=message,
+                    details=details,
+                )
+            ),
+        )
+
+    def run_backhalf(self, task_id: str) -> dict[str, Any]:
+        workspace = self._workspace(task_id)
+        try:
+            decisions = self._backhalf_orchestrator(
+                task_id,
+                workspace,
+            ).run()
+        except (BackhalfRuntimeError, ValidationError, ValueError) as exc:
+            raise StudioValidationError(str(exc)) from exc
+        self._append_event(
+            task_id,
+            event_type="backhalf_run_completed",
+            status=(
+                "succeeded"
+                if decisions.get("S6") == "OPEN"
+                else "blocked"
+            ),
+            message=(
+                "Registered S2-S6 path completed"
+                if decisions.get("S6") == "OPEN"
+                else "Registered S2-S6 path stopped at a closed gate"
+            ),
+            details={
+                "decisions": decisions,
+                "scientific_qualification_granted": False,
+                "real_world_action_authorized": False,
+            },
+        )
+        return self.snapshot(task_id)
+
+    def start_backhalf(self, task_id: str) -> dict[str, Any]:
+        workspace = self._workspace(task_id)
+        if not workspace.current_gate("S1"):
+            raise StudioConflictError(
+                "S2-S6 execution requires an open current S1 gate"
+            )
+        with self._lock:
+            if task_id in self._active_tasks:
+                raise StudioConflictError("task already has an active stage run")
+            self._active_tasks.add(task_id)
+        self._append_event(
+            task_id,
+            event_type="backhalf_run_accepted",
+            status="accepted",
+            message="Registered scalar ODE S2-S6 run accepted by the local bridge",
+        )
+
+        def worker() -> None:
+            try:
+                self.run_backhalf(task_id)
+            except Exception as exc:
+                self._append_event(
+                    task_id,
+                    event_type="backhalf_run_failed",
+                    status="failed",
+                    message="S2-S6 run failed closed",
+                    details={
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
+            finally:
+                with self._lock:
+                    self._active_tasks.discard(task_id)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"fma-studio-{task_id}-backhalf",
             daemon=True,
         )
         thread.start()

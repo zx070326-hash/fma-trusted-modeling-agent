@@ -279,6 +279,29 @@ class StudioS1OrchestratorV58:
                     encoding="utf-8"
                 )
             ),
+            "available_execution_adapters": [
+                {
+                    "adapter_id": "scalar_autonomous_ode_v52",
+                    "applicability": (
+                        "Strictly increasing times with at least twelve finite "
+                        "positive scalar observations."
+                    ),
+                    "registered_families": [
+                        "constant",
+                        "exponential",
+                        "gompertz",
+                        "logistic",
+                    ],
+                    "required_model_family_marker": (
+                        "ODE, ordinary differential, or autonomous differential"
+                    ),
+                    "required_mathematical_marker": "dx/dt",
+                    "authority_note": (
+                        "This is an available executor, not a requirement to "
+                        "select it and not scientific qualification."
+                    ),
+                }
+            ],
         }
 
     def _parse_branch(

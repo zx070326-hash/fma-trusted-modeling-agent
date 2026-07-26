@@ -42,7 +42,7 @@ test("server-renders the real modeling workbench", async () => {
   assert.match(html, /执行服务待连接/);
   assert.match(html, /本地执行桥/);
   assert.match(html, /新建真实任务/);
-  assert.match(html, /https:\/\/fma\.example\/og\.png/);
+  assert.match(html, /https:\/\/fma\.example\/og-v59\.png/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });
 
@@ -72,6 +72,8 @@ test("keeps workflow, execution truth, and authority explicit in source", async 
   assert.match(data, /role: "Harness"/);
   assert.match(bridge, /X-FMA-Bridge-Token/);
   assert.match(bridge, /run-s1/);
+  assert.match(bridge, /run-backhalf/);
+  assert.match(bridge, /data\/ode/);
   assert.match(bridge, /只允许连接本机 loopback 地址/);
   assert.doesNotMatch(bridge, /localStorage|sessionStorage/);
   assert.match(layout, /generateMetadata/);

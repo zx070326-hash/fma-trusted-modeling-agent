@@ -12,6 +12,10 @@ from fma.studio.s1_runtime import (
     S1SelectionDraftV58,
     ValidationRuleDraftV58,
 )
+from fma.studio.backhalf_runtime import (
+    DataMappingDraftV59,
+    DecisionNarrativeDraftV59,
+)
 from fma.studio.service import DecisionFunctionDraftV58
 from fma.v5.workspace_schemas import RegimeDiagnosisV50
 from fma.v5_8.epistemic import (
@@ -352,3 +356,67 @@ def test_v58_synthesizer_rules_fit_historical_artifact_envelope() -> None:
     assert math_form["maxLength"] == 2600
     artifacts = schema["properties"]["proposed_artifacts"]
     assert artifacts["minItems"] == artifacts["maxItems"] == 8
+
+
+@pytest.mark.parametrize(
+    ("stage", "role_name", "artifact_type", "artifact_schema"),
+    [
+        ("S2", "s2_data_steward", "data_mapping", DataMappingDraftV59),
+        (
+            "S5",
+            "s5_decision_writer",
+            "decision_narrative",
+            DecisionNarrativeDraftV59,
+        ),
+    ],
+)
+def test_v59_wire_schema_constrains_backhalf_role_artifacts(
+    stage,
+    role_name,
+    artifact_type,
+    artifact_schema,
+) -> None:
+    request = RoleRequestV51.seal(
+        request_id=f"request-{role_name}",
+        task_id="epistemic-fixture",
+        stage=stage,
+        role_name=role_name,
+        role_kind="generator",
+        subject_id="candidate.mechanistic",
+        objective="Produce one bounded back-half draft for harness validation.",
+        public_inputs={
+            "required_artifacts": {
+                artifact_type: artifact_schema.model_json_schema()
+            }
+        },
+        allowed_candidate_ids=["candidate.mechanistic"],
+        authority_denials=["cannot_sign_gate"],
+    )
+
+    schema = role_draft_schema_v58(request)
+    artifacts = schema["properties"]["proposed_artifacts"]
+
+    assert artifacts["minItems"] == artifacts["maxItems"] == 1
+    variant = artifacts["items"]["anyOf"][0]
+    assert variant["properties"]["artifact_type"]["const"] == artifact_type
+    assert variant["properties"]["content"]["type"] == "object"
+
+
+def test_v59_wire_schema_forbids_reviewer_artifacts_after_s1() -> None:
+    request = RoleRequestV51.seal(
+        request_id="request-s4-red-team",
+        task_id="epistemic-fixture",
+        stage="S4",
+        role_name="s4_red_team",
+        role_kind="reviewer",
+        subject_id="s4-work",
+        objective="Independently audit frozen S4 evidence.",
+        public_inputs={},
+        allowed_candidate_ids=[],
+        authority_denials=["cannot_sign_gate"],
+    )
+
+    schema = role_draft_schema_v58(request)
+    artifacts = schema["properties"]["proposed_artifacts"]
+
+    assert artifacts["minItems"] == artifacts["maxItems"] == 0

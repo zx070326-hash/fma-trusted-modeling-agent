@@ -25,7 +25,7 @@ flowchart LR
 
 Codex 只能提出模型草稿。Harness 独占以下权力：生成候选 ID、绑定冻结契约、封存 IR、编译、求解、验证、晋级和撤销证据。
 
-## V5.8 Studio：真实 S0–S1
+## V5.9 Studio：真实 S0–S6 窄域纵切
 
 本地 Studio Bridge 已接通可运行的 S0–S1 纵向切片。S1 不是单次
 “选一个模型”：四个新鲜、隔离的 Codex 角色从共同 S0 契约出发，分别生成
@@ -50,11 +50,22 @@ Codex 只能提出模型草稿。Harness 独占以下权力：生成候选 ID、
 时间索引、特征构造、估计、依赖关系、基线和不确定性规则；未通过时只允许
 一次完整替换式修复，再次未通过便保留失败证据并停止，不生成半成品 S1。
 
+V5.9 在此基础上增加一个可执行但刻意狭窄的后半链路：只有当 S1 冻结候选
+明确兼容正值标量自治 ODE，且用户提交至少 12 个严格递增时间点与对应正值
+观测时，Harness 才会绑定 `scalar_autonomous_ode_v52`。S2 冻结原始数据、
+来源、恒等变换与 processed manifest；S3 在注册的 constant、exponential、
+gompertz、logistic 候选族上拟合并执行确定性重放与 L0–L2；S4 执行 L3
+holdout 与 L4 uncertainty；S5 只生成结果/UQ 绑定的报告性 dossier；S6 从
+机器可读 result index 注入并构建 PDF。任一科学检查失败，后续 Gate 停止。
+任意模型、任意数据格式和自动换模型恢复尚不在这条生产适配器的能力内。
+
 Studio API：
 
 ```text
 POST /api/v1/tasks/{task_id}/run-s0
 POST /api/v1/tasks/{task_id}/run-s1
+POST /api/v1/tasks/{task_id}/data/ode
+POST /api/v1/tasks/{task_id}/run-backhalf
 GET  /api/v1/tasks/{task_id}
 ```
 
@@ -617,11 +628,11 @@ python -m fma.v5 status --workspace D:\tasks\example
 [Iteration 28 结果](experiments/iteration_28/RESULTS.md) 和
 [机器状态](experiments/iteration_28/STATUS.json)。
 
-### FMA Studio：前端到真实 S0 的本地执行桥
+### FMA Studio：前端到真实 S0–S6 窄域链路的本地执行桥
 
-`fma.studio` 只绑定 loopback，并把浏览器请求收敛为三个窄接口：创建任务、
-读取状态、启动一次 S0。authority key 始终留在服务端；Codex 只提交未信任草稿，
-Harness 负责结构验证、独立 reviewer 收据和 Gate 转移。
+`fma.studio` 只绑定 loopback，并把浏览器请求收敛为创建任务、读取状态、
+阶段启动和正值标量 ODE 数据接收等窄接口。authority key 始终留在服务端；
+Codex 只提交未信任草稿，Harness 负责结构验证、独立 reviewer 收据和 Gate 转移。
 
 ```powershell
 $env:FMA_STUDIO_TOKEN = [guid]::NewGuid().ToString("N")
@@ -632,6 +643,7 @@ python -m fma.studio `
 ```
 
 随后在 `frontend` 运行 `npm run dev`，打开 `http://localhost:3001`，在“本地执行桥”
-中填入 `http://127.0.0.1:8765` 和同一会话令牌。当前真实纵切止于
-`S0 generator → mechanical check → fresh referee → S0 gate`；S1–S6 尚未通过网页调度。
+中填入 `http://127.0.0.1:8765` 和同一会话令牌。当前网页可调度 S0、graph-native
+S1，以及已注册正值标量 ODE 适配器的 S2–S6；不兼容的 S1 候选或缺失数据会
+fail closed，不会用另一个模型静默替代。
 外部写入、私有验收、科学资格和现实行动始终不在该桥的权限内。
