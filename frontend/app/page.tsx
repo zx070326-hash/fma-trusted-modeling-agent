@@ -10,8 +10,10 @@ import {
   modelingLoop,
   stages,
 } from "./modeling-data";
+import { useStudioBridge } from "./use-studio-bridge";
 
 type ViewId = "workspace" | "graph" | "delivery";
+type StudioBridge = ReturnType<typeof useStudioBridge>;
 
 const queryTypes = ["自动判断", "解释", "预测", "优化", "控制", "设计"];
 
@@ -69,14 +71,33 @@ function StageNavigator({
 function IntakeWorkspace({
   objective,
   setObjective,
+  bridge,
 }: {
   objective: string;
   setObjective: (value: string) => void;
+  bridge: StudioBridge;
 }) {
   const [queryType, setQueryType] = useState("自动判断");
   const [files, setFiles] = useState<string[]>([]);
   const [draftCreated, setDraftCreated] = useState(false);
   const canCreate = objective.trim().length >= 12;
+  const s0Open = bridge.task?.workflow.stage_statuses.S0 === "gate_open";
+  const agentRunning = bridge.task
+    ? ["accepted", "running"].includes(bridge.task.activity)
+    : false;
+
+  const createTask = async () => {
+    if (bridge.connected) {
+      try {
+        await bridge.createTask(objective);
+        setDraftCreated(false);
+      } catch {
+        return;
+      }
+    } else {
+      setDraftCreated(true);
+    }
+  };
 
   return (
     <>
@@ -176,10 +197,10 @@ function IntakeWorkspace({
           <button
             className="primary-button"
             type="button"
-            disabled={!canCreate}
-            onClick={() => setDraftCreated(true)}
+            disabled={!canCreate || bridge.busy}
+            onClick={() => void createTask()}
           >
-            建立本地任务草案
+            {bridge.connected ? "创建真实 FMA 任务" : "建立本地任务草案"}
             <span aria-hidden="true">→</span>
           </button>
         </div>
@@ -199,6 +220,51 @@ function IntakeWorkspace({
             </button>
           </div>
         )}
+
+        {bridge.task && (
+          <div className="live-task-receipt" role="status">
+            <div className="live-task-head">
+              <div>
+                <Pill tone={s0Open ? "green" : "blue"}>
+                  {s0Open ? "S0 GATE OPEN" : "真实任务已冻结"}
+                </Pill>
+                <strong>{bridge.task.task_id}</strong>
+              </div>
+              <button
+                className="run-agent-button"
+                type="button"
+                disabled={agentRunning || bridge.busy || s0Open}
+                onClick={() => void bridge.runS0()}
+              >
+                {s0Open
+                  ? "S1 接口待接入"
+                  : agentRunning
+                    ? "Codex 正在完成 S0…"
+                    : "启动 Codex 完成 S0"}
+              </button>
+            </div>
+            <div className="live-event-list">
+              {bridge.task.events.slice(-4).map((event) => (
+                <div key={event.event_hash}>
+                  <span className={`event-state event-${event.status}`} />
+                  <span>
+                    <strong>{event.message}</strong>
+                    <small>
+                      #{event.sequence} · {event.event_type}
+                    </small>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p>
+              Graph verified:{" "}
+              {bridge.task.workflow.graph_verified ? "true" : "false"} ·
+              scientific qualification: false · real-world action: false
+            </p>
+          </div>
+        )}
+
+        {bridge.error && <p className="bridge-error">{bridge.error}</p>}
       </section>
 
       <section className="work-card diagnostic-card">
@@ -255,9 +321,45 @@ function LockedStage({
   );
 }
 
-function ContextRail() {
+function ContextRail({ bridge }: { bridge: StudioBridge }) {
   return (
     <aside className="context-rail">
+      <section className="rail-card bridge-card">
+        <div className="rail-heading">
+          <span>本地执行桥</span>
+          <small>{bridge.connected ? "CONNECTED" : "OFFLINE"}</small>
+        </div>
+        <label>
+          <span>Bridge URL</span>
+          <input
+            value={bridge.url}
+            onChange={(event) => bridge.setUrl(event.target.value)}
+            inputMode="url"
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          <span>一次性会话令牌</span>
+          <input
+            value={bridge.token}
+            onChange={(event) => bridge.setToken(event.target.value)}
+            type="password"
+            autoComplete="off"
+            placeholder="只保存在当前页面内存"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => void bridge.connect()}
+          disabled={bridge.busy}
+        >
+          {bridge.connected ? "重新检查连接" : "连接本地 FMA"}
+        </button>
+        <p>
+          authority key 留在本地服务端，永不进入浏览器、模型提示或前端日志。
+        </p>
+      </section>
+
       <section className="rail-card">
         <div className="rail-heading">
           <span>本次建模怎样完成</span>
@@ -300,10 +402,13 @@ function ContextRail() {
 
       <section className="rail-card rail-boundary">
         <span>当前产品状态</span>
-        <strong>前端工作台已就绪</strong>
+        <strong>
+          {bridge.connected ? "本地执行桥已连接" : "前端工作台已就绪"}
+        </strong>
         <p>
-          新任务执行 API 尚未接入。本地内核已经具备 S0–S6、候选演化、检查、Gate
-          与报告能力，但网页还不能直接调度它。
+          {bridge.connected
+            ? "网页现在可以创建真实 FMA 工作区并启动受控 S0；S1–S6 仍按阶段逐步接入。"
+            : "在本机启动 Studio Bridge 后，网页可以创建真实任务并让 Codex 完成受控 S0。"}
         </p>
       </section>
     </aside>
@@ -460,6 +565,7 @@ export default function Home() {
   const [view, setView] = useState<ViewId>("workspace");
   const [selectedStage, setSelectedStage] = useState<string>("S0");
   const [objective, setObjective] = useState("");
+  const bridge = useStudioBridge();
   const viewingCompletedTask = view !== "workspace";
 
   return (
@@ -505,8 +611,10 @@ export default function Home() {
         <div className="runtime-state">
           <span className="runtime-dot" />
           <span>
-            前端已就绪
-            <small>执行服务待接入</small>
+            {bridge.connected ? "本地内核已连接" : "前端已就绪"}
+            <small>
+              {bridge.connected ? "S0 真实执行可用" : "执行服务待连接"}
+            </small>
           </span>
         </div>
       </header>
@@ -576,6 +684,7 @@ export default function Home() {
                 <IntakeWorkspace
                   objective={objective}
                   setObjective={setObjective}
+                  bridge={bridge}
                 />
               ) : (
                 <LockedStage
@@ -584,7 +693,7 @@ export default function Home() {
                 />
               )}
             </div>
-            <ContextRail />
+            <ContextRail bridge={bridge} />
           </div>
         )}
         {view === "graph" && <GraphView />}

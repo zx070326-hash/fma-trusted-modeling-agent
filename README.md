@@ -580,3 +580,22 @@ python -m fma.v5 status --workspace D:\tasks\example
 逐条覆盖与缺口见 [V5 需求追踪矩阵](V5_REQUIREMENTS_TRACE.md)；最终合成控制链证据见
 [Iteration 28 结果](experiments/iteration_28/RESULTS.md) 和
 [机器状态](experiments/iteration_28/STATUS.json)。
+
+### FMA Studio：前端到真实 S0 的本地执行桥
+
+`fma.studio` 只绑定 loopback，并把浏览器请求收敛为三个窄接口：创建任务、
+读取状态、启动一次 S0。authority key 始终留在服务端；Codex 只提交未信任草稿，
+Harness 负责结构验证、独立 reviewer 收据和 Gate 转移。
+
+```powershell
+$env:FMA_STUDIO_TOKEN = [guid]::NewGuid().ToString("N")
+python -m fma.studio `
+  --task-root D:\fma-studio-tasks `
+  --authority-key-file D:\secure\fma-v5.key `
+  --codex-bin "C:\path\to\codex.exe"
+```
+
+随后在 `frontend` 运行 `npm run dev`，打开 `http://localhost:3001`，在“本地执行桥”
+中填入 `http://127.0.0.1:8765` 和同一会话令牌。当前真实纵切止于
+`S0 generator → mechanical check → fresh referee → S0 gate`；S1–S6 尚未通过网页调度。
+外部写入、私有验收、科学资格和现实行动始终不在该桥的权限内。

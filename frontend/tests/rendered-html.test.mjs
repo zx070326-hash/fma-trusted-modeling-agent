@@ -39,28 +39,35 @@ test("server-renders the real modeling workbench", async () => {
   assert.match(html, /你现在想解决什么/);
   assert.match(html, /系统边界是什么/);
   assert.match(html, /Graph 贯穿其中/);
-  assert.match(html, /执行服务待接入/);
+  assert.match(html, /执行服务待连接/);
+  assert.match(html, /本地执行桥/);
   assert.match(html, /新建真实任务/);
   assert.match(html, /https:\/\/fma\.example\/og\.png/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });
 
 test("keeps workflow, execution truth, and authority explicit in source", async () => {
-  const [page, data, layout] = await Promise.all([
+  const [page, data, layout, bridge] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/modeling-data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/use-studio-bridge.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /建立本地任务草案/);
   assert.match(page, /本页面没有伪造这次模型调用/);
   assert.match(page, /启动 Agent · 待接入执行服务/);
+  assert.match(page, /创建真实 FMA 任务/);
+  assert.match(page, /启动 Codex 完成 S0/);
   assert.match(page, /type="file"/);
   assert.match(page, /AUTHORITY BOUNDARY/);
   assert.match(data, /\{ label: "科学资格", value: "FALSE" \}/);
   assert.match(data, /id: "S0"/);
   assert.match(data, /id: "S6"/);
   assert.match(data, /role: "Harness"/);
+  assert.match(bridge, /X-FMA-Bridge-Token/);
+  assert.match(bridge, /只允许连接本机 loopback 地址/);
+  assert.doesNotMatch(bridge, /localStorage|sessionStorage/);
   assert.match(layout, /generateMetadata/);
   assert.doesNotMatch(page, /react-loading-skeleton|SkeletonPreview/);
 });
