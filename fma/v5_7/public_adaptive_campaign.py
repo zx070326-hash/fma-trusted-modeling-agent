@@ -64,13 +64,23 @@ def _hash_without(model: StrictModel, *fields: str) -> str:
     return sha256_value(model.model_dump(mode="json", exclude=set(fields)))
 
 
+def _source_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class AdaptiveCampaignProtocolV57(StrictModel):
     schema_version: Literal["5.7-adaptive-campaign-protocol"] = (
         "5.7-adaptive-campaign-protocol"
     )
     protocol_id: Identifier
+    implementation_source_commit: Annotated[
+        str,
+        Field(pattern=r"^[0-9a-f]{40}$"),
+    ]
     v55_protocol_hash: Sha256
     source_registry_hash: Sha256
+    source_selection_spec_hash: Sha256
+    source_ode_threshold_hash: Sha256
     primary_threshold_hash: Sha256
     adaptive_threshold_hash: Sha256
     primary_adapter_source_sha256: Sha256
@@ -128,6 +138,77 @@ class AdaptiveCampaignProtocolV57(StrictModel):
         payload = draft.model_dump(exclude={"protocol_hash"})
         payload["protocol_hash"] = draft.content_hash()
         return cls(**payload)
+
+
+def _assert_protocol_implementation_v57(
+    protocol: AdaptiveCampaignProtocolV57,
+) -> None:
+    """Require current and frozen-commit source bytes to match the protocol."""
+
+    root = Path(__file__).resolve().parents[2]
+    package = Path(__file__).resolve().parent
+    bindings = {
+        "primary_adapter_source_sha256": (
+            package.parent / "v5_6" / "hybrid_ode.py",
+            "fma/v5_6/hybrid_ode.py",
+        ),
+        "adaptive_adapter_source_sha256": (
+            package / "adaptive_positive_series.py",
+            "fma/v5_7/adaptive_positive_series.py",
+        ),
+        "unseen_source_adapter_source_sha256": (
+            package / "unseen_source.py",
+            "fma/v5_7/unseen_source.py",
+        ),
+        "unseen_source_core_source_sha256": (
+            package.parent / "v5_6" / "unseen_source.py",
+            "fma/v5_6/unseen_source.py",
+        ),
+        "world_bank_custodian_source_sha256": (
+            package.parent / "v5_5" / "world_bank_custodian.py",
+            "fma/v5_5/world_bank_custodian.py",
+        ),
+        "public_runner_source_sha256": (
+            Path(__file__),
+            "fma/v5_7/public_adaptive_campaign.py",
+        ),
+    }
+    ancestor = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            protocol.implementation_source_commit,
+            "HEAD",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError("V5.7 implementation commit is not an ancestor")
+    for field, (current_path, repository_path) in bindings.items():
+        expected = getattr(protocol, field)
+        committed = subprocess.run(
+            [
+                "git",
+                "show",
+                (
+                    f"{protocol.implementation_source_commit}:"
+                    f"{repository_path}"
+                ),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout
+        if (
+            _source_sha256(current_path) != expected
+            or hashlib.sha256(committed).hexdigest() != expected
+        ):
+            raise ValueError(f"V5.7 implementation binding differs: {field}")
 
 
 class AdaptiveForecastPlanV57(StrictModel):
@@ -391,6 +472,7 @@ def materialize_adaptive_forecast_plan_v57(
     frozen_at: datetime | None = None,
 ) -> AdaptiveForecastPlanV57:
     protocol.assert_sealed()
+    _assert_protocol_implementation_v57(protocol)
     primary_thresholds.assert_sealed()
     adaptive_thresholds.assert_sealed()
     unseen = verify_unseen_world_bank_campaign_v56(unseen_campaign_dir)
@@ -398,6 +480,10 @@ def materialize_adaptive_forecast_plan_v57(
     if (
         protocol.v55_protocol_hash != launch.protocol.protocol_hash
         or protocol.source_registry_hash != unseen.registry.registry_hash
+        or protocol.source_selection_spec_hash
+        != launch.selection_spec.selection_spec_hash
+        or protocol.source_ode_threshold_hash
+        != launch.thresholds.threshold_hash
         or protocol.primary_threshold_hash != primary_thresholds.threshold_hash
         or protocol.adaptive_threshold_hash
         != adaptive_thresholds.threshold_hash
@@ -631,6 +717,7 @@ def run_public_adaptive_campaign_v57(
         forecast_plan_path.read_text(encoding="utf-8")
     )
     protocol.assert_sealed()
+    _assert_protocol_implementation_v57(protocol)
     primary.assert_sealed()
     adaptive.assert_sealed()
     plan.assert_sealed()
@@ -640,6 +727,10 @@ def run_public_adaptive_campaign_v57(
     if (
         protocol.v55_protocol_hash != launch.protocol.protocol_hash
         or protocol.source_registry_hash != unseen.registry.registry_hash
+        or protocol.source_selection_spec_hash
+        != launch.selection_spec.selection_spec_hash
+        or protocol.source_ode_threshold_hash
+        != launch.thresholds.threshold_hash
         or protocol.primary_threshold_hash != primary.threshold_hash
         or protocol.adaptive_threshold_hash != adaptive.threshold_hash
         or protocol.primary_adapter_source_sha256
@@ -895,6 +986,7 @@ def verify_public_adaptive_campaign_v57(
         root / "adaptive_thresholds_v57.json"
     )
     protocol.assert_sealed()
+    _assert_protocol_implementation_v57(protocol)
     plan.assert_sealed()
     primary.assert_sealed()
     adaptive.assert_sealed()
@@ -955,6 +1047,10 @@ def verify_public_adaptive_campaign_v57(
         or recomputed_prediction.prediction_hash != prediction.prediction_hash
         or protocol.v55_protocol_hash != launch.protocol.protocol_hash
         or protocol.source_registry_hash != unseen.registry.registry_hash
+        or protocol.source_selection_spec_hash
+        != launch.selection_spec.selection_spec_hash
+        or protocol.source_ode_threshold_hash
+        != launch.thresholds.threshold_hash
         or protocol.primary_threshold_hash != primary.threshold_hash
         or protocol.adaptive_threshold_hash != adaptive.threshold_hash
         or protocol.primary_adapter_source_sha256 != primary_source_hash

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from fma.v5_5.campaign_protocol import (
     PublicEligibilitySettingsV55,
 )
 from fma.v5_5.world_bank_custodian import WorldBankSelectionSpecV55
+from fma.v5_5.public_ode_campaign import verify_public_launch_v55
 from fma.v5_6.public_hybrid_campaign import load_hybrid_thresholds_v56
 from fma.v5_6.unseen_source import (
     PriorSourceExclusionV56,
@@ -192,14 +194,26 @@ def _adaptive_protocol(
     *,
     v55_protocol: ProspectiveCampaignProtocolV55,
     registry: UnseenSourceRegistryV56,
+    source_selection_spec_hash: str,
+    source_ode_threshold_hash: str,
     primary_threshold_hash: str,
     adaptive_threshold_hash: str,
 ) -> AdaptiveCampaignProtocolV57:
     root = Path(__file__).resolve().parents[1]
     return AdaptiveCampaignProtocolV57.seal(
         protocol_id="i36-public-adaptive-protocol",
+        implementation_source_commit=subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip(),
         v55_protocol_hash=v55_protocol.protocol_hash,
         source_registry_hash=registry.registry_hash,
+        source_selection_spec_hash=source_selection_spec_hash,
+        source_ode_threshold_hash=source_ode_threshold_hash,
         primary_threshold_hash=primary_threshold_hash,
         adaptive_threshold_hash=adaptive_threshold_hash,
         primary_adapter_source_sha256=hashlib.sha256(
@@ -260,9 +274,16 @@ def test_public_adaptive_runner_abstains_for_fixture_and_verifies(
     adaptive_path = root / "V5_7_ADAPTIVE_THRESHOLDS.json"
     primary = load_hybrid_thresholds_v56(primary_path)
     adaptive = load_adaptive_thresholds_v57(adaptive_path)
+    launch = verify_public_launch_v55(
+        source_dir / "campaign_public_v55"
+    )
     protocol = _adaptive_protocol(
         v55_protocol=v55_protocol,
         registry=registry,
+        source_selection_spec_hash=(
+            launch.selection_spec.selection_spec_hash
+        ),
+        source_ode_threshold_hash=launch.thresholds.threshold_hash,
         primary_threshold_hash=primary.threshold_hash,
         adaptive_threshold_hash=adaptive.threshold_hash,
     )
