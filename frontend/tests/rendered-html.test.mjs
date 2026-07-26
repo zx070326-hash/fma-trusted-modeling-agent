@@ -59,6 +59,11 @@ test("keeps workflow, execution truth, and authority explicit in source", async 
   assert.match(page, /启动 Agent · 待接入执行服务/);
   assert.match(page, /创建真实 FMA 任务/);
   assert.match(page, /启动 Codex 完成 S0/);
+  assert.match(page, /启动并行 Codex 完成 S1/);
+  assert.match(page, /启动 Graph-native S1/);
+  assert.match(page, /盲探索分支/);
+  assert.match(page, /共享知识不等于共享结论/);
+  assert.match(page, /cross-task experience/);
   assert.match(page, /type="file"/);
   assert.match(page, /AUTHORITY BOUNDARY/);
   assert.match(data, /\{ label: "科学资格", value: "FALSE" \}/);
@@ -66,6 +71,7 @@ test("keeps workflow, execution truth, and authority explicit in source", async 
   assert.match(data, /id: "S6"/);
   assert.match(data, /role: "Harness"/);
   assert.match(bridge, /X-FMA-Bridge-Token/);
+  assert.match(bridge, /run-s1/);
   assert.match(bridge, /只允许连接本机 loopback 地址/);
   assert.doesNotMatch(bridge, /localStorage|sessionStorage/);
   assert.match(layout, /generateMetadata/);

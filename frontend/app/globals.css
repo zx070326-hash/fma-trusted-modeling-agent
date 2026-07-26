@@ -885,6 +885,120 @@ input:focus-visible {
   font-size: 8px;
 }
 
+.epistemic-summary {
+  border-top: 1px solid rgba(116, 167, 255, 0.14);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+  padding-top: 13px;
+}
+
+.epistemic-summary > div {
+  background: rgba(11, 17, 26, 0.54);
+  border: 1px solid rgba(116, 167, 255, 0.12);
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px;
+}
+
+.epistemic-summary span {
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.epistemic-summary strong {
+  color: var(--blue);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+}
+
+.s1-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.s1-workspace .work-hero {
+  align-items: end;
+  display: flex;
+  gap: 26px;
+  justify-content: space-between;
+}
+
+.s1-workspace .work-hero .primary-button {
+  flex: 0 0 auto;
+  margin-bottom: 4px;
+}
+
+.s1-branch-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.s1-branch-grid article {
+  background: rgba(11, 17, 26, 0.58);
+  border: 1px solid rgba(116, 167, 255, 0.14);
+  border-radius: 8px;
+  min-height: 112px;
+  padding: 14px;
+}
+
+.s1-branch-grid small,
+.s1-branch-grid strong,
+.s1-branch-grid p {
+  display: block;
+}
+
+.s1-branch-grid small {
+  color: var(--muted-2);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+}
+
+.s1-branch-grid strong {
+  color: var(--blue);
+  font-size: 10px;
+  margin-top: 15px;
+}
+
+.s1-branch-grid p,
+.s1-not-run {
+  color: var(--muted-2);
+  font-size: 9px;
+  line-height: 1.55;
+  margin: 6px 0 0;
+}
+
+.knowledge-flow {
+  align-items: center;
+  background: rgba(116, 167, 255, 0.06);
+  border: 1px solid rgba(116, 167, 255, 0.12);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.knowledge-flow span {
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.knowledge-flow i {
+  color: var(--blue);
+  font-style: normal;
+}
+
+.epistemic-summary.expanded {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .live-task-receipt > p {
   color: var(--muted-2);
   font-family: var(--font-geist-mono), monospace;
@@ -1527,6 +1641,10 @@ input:focus-visible {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .s1-branch-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .question-grid article:nth-child(3) {
     border-left: 0;
     border-top: 1px solid var(--line);
@@ -1596,6 +1714,21 @@ input:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .s1-workspace .work-hero {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .epistemic-summary,
+  .epistemic-summary.expanded {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .knowledge-flow {
+    flex-wrap: wrap;
+    justify-content: start;
+  }
+
   .artifact-header {
     align-items: start;
     flex-direction: column;
@@ -1651,6 +1784,12 @@ input:focus-visible {
   }
 
   .question-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .s1-branch-grid,
+  .epistemic-summary,
+  .epistemic-summary.expanded {
     grid-template-columns: 1fr;
   }
 

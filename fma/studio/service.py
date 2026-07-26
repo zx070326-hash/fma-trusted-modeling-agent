@@ -1,9 +1,9 @@
 """Typed local service that connects the web studio to the FMA V5 kernel.
 
 The browser never receives the V5 authority key and cannot write graph state
-directly.  It may request a task or a bounded S0 run; this service validates the
-request, invokes isolated Codex role processes, and asks the existing harness
-to authenticate checks, reviews, and graph transitions.
+directly.  It may request a task or bounded S0/S1 runs; this service validates
+the request, invokes isolated Codex role processes, and asks the existing
+harness to authenticate checks, reviews, and graph transitions.
 """
 
 from __future__ import annotations
@@ -12,33 +12,40 @@ import hashlib
 import json
 import re
 import threading
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, ValidationError, model_validator
 
 from fma.codex_driver import CodexCLIConfig
 from fma.hashing import canonical_json, sha256_value
 from fma.schemas import StrictModel
 from fma.v2.schemas import Identifier
 from fma.v5.scaffold import scaffold_task_workspace
-from fma.v5.stage_workspace import POLICIES, StageWorkspaceV50
+from fma.v5.stage_workspace import (
+    POLICIES,
+    StageWorkspaceV50,
+    _evaluate_arithmetic,
+)
 from fma.v5.workspace_schemas import (
+    DecisionFunctionCanaryV50,
     DecisionFunctionSpecV50,
     RegimeDiagnosisV50,
     TaskWorkspaceSpecV50,
     WorkflowProfileV50,
 )
 from fma.v5_1.codex_stage_driver import (
-    CodexStageRoleTransportV51,
     RoleProcessOutcomeV51,
     StageRoleDriverV51,
     StageRoleTransportV51,
     commit_generator_outcome_v51,
 )
+from fma.v5_8.epistemic import EpistemicGraphStoreV58
+from fma.v5_8.stage_driver import CodexStageRoleTransportV58
+
+from .s1_runtime import S1RuntimeError, StudioS1OrchestratorV58
 
 
 _TASK_ID_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,58}[A-Za-z0-9])?")
@@ -46,6 +53,13 @@ _S0_PATHS = (
     "problem/contract.json",
     "problem/decision_function.json",
     "docs/regime.json",
+)
+_S1_PATHS = (
+    "docs/candidates.json",
+    "docs/assumptions.json",
+    "docs/symbols.json",
+    "docs/model_spec.json",
+    "docs/validation_plan.json",
 )
 
 
@@ -77,6 +91,42 @@ class CreateTaskRequest(StrictModel):
     evidence_scope: Literal["development", "public_data"] = "development"
 
 
+class DecisionFunctionCanaryDraftV58(StrictModel):
+    canary_id: Identifier
+    input_values: list[float] = Field(min_length=1, max_length=8)
+    expected: float = Field(allow_inf_nan=False)
+    tolerance: float = Field(default=1e-9, gt=0, allow_inf_nan=False)
+
+
+class DecisionFunctionDraftV58(StrictModel):
+    """Structured-output-safe core; the harness restores named canary inputs."""
+
+    schema_version: Literal["5.8"] = "5.8"
+    function_id: Identifier
+    input_names: list[Identifier] = Field(min_length=1, max_length=8)
+    expression: str = Field(min_length=1, max_length=1000)
+    sense: Literal["minimize", "maximize", "report_only"]
+    output_unit: str = Field(min_length=1, max_length=200)
+    canaries: list[DecisionFunctionCanaryDraftV58] = Field(
+        min_length=1,
+        max_length=8,
+    )
+
+    @model_validator(mode="after")
+    def validate_draft(self) -> "DecisionFunctionDraftV58":
+        if len(self.input_names) != len(set(self.input_names)):
+            raise ValueError("input_names must be unique")
+        canary_ids = [item.canary_id for item in self.canaries]
+        if len(canary_ids) != len(set(canary_ids)):
+            raise ValueError("canary IDs must be unique")
+        if any(
+            len(item.input_values) != len(self.input_names)
+            for item in self.canaries
+        ):
+            raise ValueError("canary input_values must align with input_names")
+        return self
+
+
 class StudioEvent(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
     sequence: int = Field(ge=1)
@@ -99,7 +149,9 @@ def _utc_now() -> datetime:
 
 def _write_json_new(path: Path, payload: object) -> None:
     if path.exists():
-        raise StudioConflictError(f"refusing to overwrite existing artifact: {path.name}")
+        raise StudioConflictError(
+            f"refusing to overwrite existing artifact: {path.name}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     temporary.write_text(
@@ -231,7 +283,9 @@ class StudioTaskService:
                 handle.write(canonical_json(event.model_dump(mode="json")) + "\n")
             return event
 
-    def create_task(self, request: CreateTaskRequest | dict[str, Any]) -> dict[str, Any]:
+    def create_task(
+        self, request: CreateTaskRequest | dict[str, Any]
+    ) -> dict[str, Any]:
         try:
             validated = (
                 request
@@ -307,6 +361,8 @@ class StudioTaskService:
         workspace = self._workspace(task_id)
         status = workspace.status()
         events = self._events(task_id)
+        s0_open = workspace.current_gate("S0") is not None
+        s1_open = workspace.current_gate("S1") is not None
         with self._lock:
             active = task_id in self._active_tasks
         return {
@@ -314,14 +370,19 @@ class StudioTaskService:
             "task_id": task_id,
             "objective": workspace.spec.objective,
             "workflow": status.model_dump(mode="json"),
-            "activity": "running" if active else (events[-1].status if events else "idle"),
+            "activity": "running"
+            if active
+            else (events[-1].status if events else "idle"),
             "events": [event.model_dump(mode="json") for event in events[-30:]],
+            "epistemic": EpistemicGraphStoreV58(workspace.root).summary(),
             "next_valid_actions": (
                 []
                 if active
                 else (
-                    ["inspect_s0", "continue_s1"]
-                    if workspace.current_gate("S0")
+                    ["inspect_s1", "continue_s2"]
+                    if s1_open
+                    else ["inspect_s0", "run_s1"]
+                    if s0_open
                     else ["run_s0"]
                 )
             ),
@@ -332,7 +393,10 @@ class StudioTaskService:
     def list_tasks(self) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
         for child in sorted(self.task_root.iterdir()):
-            if not child.is_dir() or not (child / ".fma" / "workspace_spec.json").is_file():
+            if (
+                not child.is_dir()
+                or not (child / ".fma" / "workspace_spec.json").is_file()
+            ):
                 continue
             try:
                 snapshot = self.snapshot(child.name)
@@ -352,7 +416,7 @@ class StudioTaskService:
         output_root = self._task_path(task_id) / ".fma" / "roles"
         if self.role_transport_factory is not None:
             return self.role_transport_factory(output_root)
-        return CodexStageRoleTransportV51(
+        return CodexStageRoleTransportV58(
             output_root,
             self.codex_config,
         )
@@ -370,12 +434,40 @@ class StudioTaskService:
             raise StudioValidationError(
                 "Codex must return exactly decision_function and regime_diagnosis"
             )
-        decision_unsealed = DecisionFunctionSpecV50.model_validate(
-            _safe_json(
-                artifacts["decision_function"],
-                artifact_type="decision_function",
-            )
+        decision_payload = _safe_json(
+            artifacts["decision_function"],
+            artifact_type="decision_function",
         )
+        if decision_payload.get("schema_version") == "5.8":
+            decision_draft = DecisionFunctionDraftV58.model_validate(
+                decision_payload
+            )
+            decision_unsealed = DecisionFunctionSpecV50(
+                function_id=decision_draft.function_id,
+                input_names=decision_draft.input_names,
+                expression=decision_draft.expression,
+                sense=decision_draft.sense,
+                output_unit=decision_draft.output_unit,
+                canaries=[
+                    DecisionFunctionCanaryV50(
+                        canary_id=item.canary_id,
+                        inputs=dict(
+                            zip(
+                                decision_draft.input_names,
+                                item.input_values,
+                                strict=True,
+                            )
+                        ),
+                        expected=item.expected,
+                        tolerance=item.tolerance,
+                    )
+                    for item in decision_draft.canaries
+                ],
+            )
+        else:
+            decision_unsealed = DecisionFunctionSpecV50.model_validate(
+                decision_payload
+            )
         regime_unsealed = RegimeDiagnosisV50.model_validate(
             _safe_json(
                 artifacts["regime_diagnosis"],
@@ -388,6 +480,18 @@ class StudioTaskService:
         regime = _sealed_without_hash(
             regime_unsealed, "diagnosis_hash", RegimeDiagnosisV50
         )
+        try:
+            for canary in decision.canaries:
+                actual = _evaluate_arithmetic(decision.expression, canary.inputs)
+                if abs(actual - canary.expected) > canary.tolerance:
+                    raise StudioValidationError(
+                        f"decision function canary failed: {canary.canary_id}"
+                    )
+        except (ArithmeticError, SyntaxError, TypeError, ValueError) as exc:
+            raise StudioValidationError(
+                "decision function expression is not executable by the safe "
+                f"arithmetic evaluator: {exc}"
+            ) from exc
         if regime.decision_function_id != decision.function_id:
             raise StudioValidationError(
                 "regime decision_function_id does not match decision function"
@@ -500,26 +604,29 @@ class StudioTaskService:
             message="Fresh Codex generator process started for S0",
         )
         generator_inputs: dict[str, Any] = {
-                "user_objective": workspace.spec.objective,
-                "mission_hash": workspace.spec.mission_hash,
-                "evidence_snapshot_hash": workspace.spec.evidence_snapshot_hash,
-                "evidence_scope": workspace.spec.evidence_scope,
-                "required_artifacts": {
-                    "decision_function": (
-                        DecisionFunctionSpecV50.model_json_schema()
-                    ),
-                    "regime_diagnosis": RegimeDiagnosisV50.model_json_schema(),
-                },
-                "requirements": [
-                    "Return exactly two proposed_artifacts.",
-                    "Use artifact_type decision_function and regime_diagnosis.",
-                    "Each content field must contain only a JSON object string.",
-                    "Bind regime evidence_hashes to evidence_snapshot_hash.",
-                    "Keep every identifier list sorted and unique.",
-                    "Use report_only when the user's decision loss is not specified.",
-                    "State limitations and a concrete abandon condition.",
-                ],
-            }
+            "user_objective": workspace.spec.objective,
+            "mission_hash": workspace.spec.mission_hash,
+            "evidence_snapshot_hash": workspace.spec.evidence_snapshot_hash,
+            "evidence_scope": workspace.spec.evidence_scope,
+            "required_artifacts": {
+                "decision_function": DecisionFunctionDraftV58.model_json_schema(),
+                "regime_diagnosis": RegimeDiagnosisV50.model_json_schema(),
+            },
+            "requirements": [
+                "Return exactly two proposed_artifacts.",
+                "Use artifact_type decision_function and regime_diagnosis.",
+                "Each content field must contain only a JSON object string.",
+                "Bind regime evidence_hashes to evidence_snapshot_hash.",
+                "Keep every identifier list sorted and unique.",
+                "Use report_only when the user's decision loss is not specified.",
+                "State limitations and a concrete abandon condition.",
+                "decision_function.expression must be only a bare arithmetic "
+                "expression over input_names; put constraints, abstention rules, "
+                "and prose in regime_diagnosis.",
+                "For each decision canary, input_values must align positionally "
+                "with input_names; the harness binds the names.",
+            ],
+        }
         producer: RoleProcessOutcomeV51 | None = None
         validation_error: str | None = None
         for attempt in (1, 2):
@@ -692,6 +799,79 @@ class StudioTaskService:
         thread = threading.Thread(
             target=worker,
             name=f"fma-studio-{task_id}-s0",
+            daemon=True,
+        )
+        thread.start()
+        return self.snapshot(task_id)
+
+    def run_s1(self, task_id: str) -> dict[str, Any]:
+        workspace = self._workspace(task_id)
+        if workspace.current_gate("S1"):
+            return self.snapshot(task_id)
+        if not workspace.current_gate("S0"):
+            raise StudioConflictError("S1 requires an open current S0 gate")
+        if any((workspace.root / relative).exists() for relative in _S1_PATHS):
+            raise StudioConflictError(
+                "S1 contains partial artifacts; automatic re-execution is blocked"
+            )
+        orchestrator = StudioS1OrchestratorV58(
+            workspace=workspace,
+            task_id=task_id,
+            driver_factory=lambda: StageRoleDriverV51(self._transport(task_id)),
+            event_callback=lambda event_type, status, message, details: (
+                self._append_event(
+                    task_id,
+                    event_type=event_type,
+                    status=status,
+                    message=message,
+                    details=details,
+                )
+            ),
+        )
+        try:
+            orchestrator.run()
+        except (S1RuntimeError, ValidationError) as exc:
+            raise StudioValidationError(str(exc)) from exc
+        return self.snapshot(task_id)
+
+    def start_s1(self, task_id: str) -> dict[str, Any]:
+        workspace = self._workspace(task_id)
+        if not workspace.current_gate("S0"):
+            raise StudioConflictError("S1 requires an open current S0 gate")
+        with self._lock:
+            if task_id in self._active_tasks:
+                raise StudioConflictError("task already has an active stage run")
+            self._active_tasks.add(task_id)
+        self._append_event(
+            task_id,
+            event_type="s1_run_accepted",
+            status="accepted",
+            message="Bounded graph-native S1 run accepted by the local bridge",
+        )
+
+        def worker() -> None:
+            try:
+                self.run_s1(task_id)
+            except Exception as exc:
+                self._append_event(
+                    task_id,
+                    event_type="s1_run_failed",
+                    status="failed",
+                    message="S1 run failed closed",
+                    details={
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
+            finally:
+                with self._lock:
+                    self._active_tasks.discard(task_id)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"fma-studio-{task_id}-s1",
             daemon=True,
         )
         thread.start()

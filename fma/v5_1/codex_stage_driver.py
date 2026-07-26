@@ -235,6 +235,24 @@ class CodexStageRoleTransportV51:
         self.process_runner = process_runner
         self.cli_locator = cli_locator
 
+    def _output_schema(self, request: RoleRequestV51) -> dict[str, Any]:
+        """Return the V5.1 wire schema.
+
+        Additive transports may narrow this schema for a typed role without
+        changing how historical V5.1 calls are parsed or receipted.
+        """
+
+        del request
+        return _strict_wire_schema(RoleDraftV51)
+
+    def _parse_draft(
+        self,
+        raw: object,
+        request: RoleRequestV51,
+    ) -> RoleDraftV51:
+        del request
+        return RoleDraftV51.model_validate(raw)
+
     def invoke(self, request: RoleRequestV51) -> RoleProcessOutcomeV51:
         request.assert_sealed()
         explorer = CodexCLIExplorer(
@@ -245,7 +263,7 @@ class CodexStageRoleTransportV51:
             run_id=request.run_id,
         )
         try:
-            schema = _strict_wire_schema(RoleDraftV51)
+            schema = self._output_schema(request)
             schema_text = canonical_json(schema)
             payload = request.model_dump(mode="json")
             prompt = (
@@ -289,8 +307,9 @@ class CodexStageRoleTransportV51:
                 raise PermissionError("Codex role process emitted tool events")
             if before != after:
                 raise PermissionError("Codex role process changed scratch state")
-            draft = RoleDraftV51.model_validate(
-                _strict_json_loads(audit.final_message)
+            draft = self._parse_draft(
+                _strict_json_loads(audit.final_message),
+                request,
             )
             if (
                 draft.request_hash != request.request_hash
@@ -299,8 +318,7 @@ class CodexStageRoleTransportV51:
                 raise ValueError("Codex draft is bound to another role request")
             if (
                 draft.selected_candidate_id is not None
-                and draft.selected_candidate_id
-                not in request.allowed_candidate_ids
+                and draft.selected_candidate_id not in request.allowed_candidate_ids
             ):
                 raise ValueError("Codex draft selected an unregistered candidate")
             receipt = RoleProcessReceiptV51.seal(
@@ -319,12 +337,8 @@ class CodexStageRoleTransportV51:
                     schema_text.encode("utf-8")
                 ).hexdigest(),
                 argv_hash=sha256_value(argv),
-                stdout_sha256=hashlib.sha256(
-                    result.stdout.encode("utf-8")
-                ).hexdigest(),
-                stderr_sha256=hashlib.sha256(
-                    result.stderr.encode("utf-8")
-                ).hexdigest(),
+                stdout_sha256=hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
+                stderr_sha256=hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
                 output_hash=sha256_value(draft),
                 event_counts=audit.event_counts,
                 item_counts=audit.item_counts,

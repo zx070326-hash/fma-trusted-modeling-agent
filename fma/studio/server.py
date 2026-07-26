@@ -14,6 +14,7 @@ from .service import StudioBridgeError, StudioTaskService
 
 _TASK_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)")
 _RUN_S0_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s0")
+_RUN_S1_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s1")
 
 
 class StudioHTTPServer(ThreadingHTTPServer):
@@ -194,6 +195,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if match:
                 self._send(202, self.server.service.start_s0(match.group(1)))
                 return
+            match = _RUN_S1_ROUTE.fullmatch(path)
+            if match:
+                self._send(202, self.server.service.start_s1(match.group(1)))
+                return
             self._send(404, {"status": "error", "type": "not_found"})
         except (ValueError, json.JSONDecodeError) as exc:
             self._send(
@@ -206,4 +211,3 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             )
         except Exception as exc:
             self._error(exc)
-

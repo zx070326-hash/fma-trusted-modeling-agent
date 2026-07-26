@@ -25,6 +25,21 @@ export type TaskSnapshot = {
   };
   activity: "idle" | "accepted" | "running" | "succeeded" | "failed" | "blocked";
   events: StudioEvent[];
+  epistemic: {
+    schema_version: "5.8";
+    graph_hash: string;
+    knowledge_unit_count: number;
+    branch_count: number;
+    effective_independent_branches: number;
+    independence_passed: boolean;
+    independence_scope: "origin_separation_only";
+    scientific_independence_established: false;
+    disclosure_packet_count: number;
+    transfer_count: number;
+    transfer_assessment_count: number;
+    cross_task_experience_count: number;
+    cross_task_use_permitted: boolean;
+  } | null;
   next_valid_actions: string[];
   scientific_qualification_granted: false;
   real_world_action_authorized: false;
@@ -153,6 +168,25 @@ export function useStudioBridge() {
     }
   }, [request, task]);
 
+  const runS1 = useCallback(async () => {
+    if (!task) throw new Error("请先创建并完成真实 FMA S0。");
+    setBusy(true);
+    setError("");
+    try {
+      const snapshot = await request<TaskSnapshot>(
+        `/api/v1/tasks/${encodeURIComponent(task.task_id)}/run-s1`,
+        { method: "POST", body: "{}" },
+      );
+      setTask(snapshot);
+      return snapshot;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "S1 启动失败");
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  }, [request, task]);
+
   const refresh = useCallback(async () => {
     if (!task) return null;
     try {
@@ -188,6 +222,7 @@ export function useStudioBridge() {
     connect,
     createTask,
     runS0,
+    runS1,
     refresh,
   };
 }

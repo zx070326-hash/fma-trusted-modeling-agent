@@ -31,16 +31,21 @@ function StageNavigator({
   selectedStage,
   setSelectedStage,
   completed = false,
+  s0Open = false,
 }: {
   selectedStage: string;
   setSelectedStage: (stage: string) => void;
   completed?: boolean;
+  s0Open?: boolean;
 }) {
   return (
     <div className="stage-list" aria-label="S0 到 S6 建模阶段">
       {stages.map((stage, index) => {
         const isActive = selectedStage === stage.id;
-        const isLocked = !completed && stage.status === "locked";
+        const isLocked =
+          !completed &&
+          stage.status === "locked" &&
+          !(stage.id === "S1" && s0Open);
         return (
           <button
             className={`stage-item ${isActive ? "stage-selected" : ""} ${
@@ -68,6 +73,124 @@ function StageNavigator({
   );
 }
 
+function S1Workspace({ bridge }: { bridge: StudioBridge }) {
+  const s1Open = bridge.task?.workflow.stage_statuses.S1 === "gate_open";
+  const running = bridge.task
+    ? ["accepted", "running"].includes(bridge.task.activity)
+    : false;
+  const epistemic = bridge.task?.epistemic;
+  const branches = [
+    ["MECHANISTIC", "机制与状态演化"],
+    ["NULL BASELINE", "最小可击败基线"],
+    ["STATISTICAL", "统计结构与不确定性"],
+    ["SYSTEM LEARNING", "系统辨识与函数学习"],
+  ];
+
+  return (
+    <div className="s1-workspace">
+      <section className="work-hero">
+        <div className="work-hero-copy">
+          <div className="section-kicker">
+            <span>ACTIVE STAGE · S1</span>
+            <Pill tone={s1Open ? "green" : "blue"}>
+              {s1Open ? "候选已冻结" : "并行探索可启动"}
+            </Pill>
+          </div>
+          <h1>先隔离地产生差异，<br />再受控地共享知识。</h1>
+          <p>
+            四个新鲜 Codex 角色先在看不到同伴结论的条件下提出结构不同的候选。
+            Harness 冻结来源后，Broker 才开放有限共享，并把迁移结论保留为待检验假设。
+          </p>
+        </div>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={running || bridge.busy || Boolean(s1Open)}
+          onClick={() => void bridge.runS1()}
+        >
+          {s1Open
+            ? "S1 GATE 已打开"
+            : running
+              ? "并行角色正在运行…"
+              : "启动 Graph-native S1"}
+          <span aria-hidden="true">→</span>
+        </button>
+      </section>
+
+      <section className="work-card s1-branch-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">BLIND FRONTIER</span>
+            <h2>四条独立候选链路</h2>
+          </div>
+          <span className="required-note">共享 S0 · 隔离来源</span>
+        </div>
+        <div className="s1-branch-grid">
+          {branches.map(([id, label], index) => (
+            <article key={id}>
+              <small>BRANCH {String(index + 1).padStart(2, "0")}</small>
+              <strong>{id}</strong>
+              <p>{label}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="work-card s1-knowledge-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">EPISTEMIC GRAPH · V5.8</span>
+            <h2>共享知识不等于共享结论</h2>
+          </div>
+          <Pill tone={epistemic?.independence_passed ? "green" : "amber"}>
+            {epistemic
+              ? epistemic.independence_passed
+                ? "ORIGIN ISOLATION PASS"
+                : "ORIGIN ISOLATION FAIL"
+              : "NOT RUN"}
+          </Pill>
+        </div>
+        <div className="knowledge-flow">
+          <span>盲候选</span>
+          <i>→</i>
+          <span>来源冻结</span>
+          <i>→</i>
+          <span>Broker 披露</span>
+          <i>→</i>
+          <span>跨范式翻译</span>
+          <i>→</i>
+          <span>目标分支复核</span>
+        </div>
+        {epistemic ? (
+          <div className="epistemic-summary expanded">
+            <div>
+              <span>知识单元</span>
+              <strong>{epistemic.knowledge_unit_count}</strong>
+            </div>
+            <div>
+              <span>隔离来源分支</span>
+              <strong>{epistemic.effective_independent_branches}</strong>
+            </div>
+            <div>
+              <span>披露包</span>
+              <strong>{epistemic.disclosure_packet_count}</strong>
+            </div>
+            <div>
+              <span>迁移评估</span>
+              <strong>{epistemic.transfer_assessment_count}</strong>
+            </div>
+          </div>
+        ) : (
+          <p className="s1-not-run">
+            尚未运行。来源隔离不等于独立科学复现；跨任务经验默认隔离，
+            本阶段不能自行授予科学支持。
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function IntakeWorkspace({
   objective,
   setObjective,
@@ -82,9 +205,11 @@ function IntakeWorkspace({
   const [draftCreated, setDraftCreated] = useState(false);
   const canCreate = objective.trim().length >= 12;
   const s0Open = bridge.task?.workflow.stage_statuses.S0 === "gate_open";
+  const s1Open = bridge.task?.workflow.stage_statuses.S1 === "gate_open";
   const agentRunning = bridge.task
     ? ["accepted", "running"].includes(bridge.task.activity)
     : false;
+  const epistemic = bridge.task?.epistemic;
 
   const createTask = async () => {
     if (bridge.connected) {
@@ -225,22 +350,30 @@ function IntakeWorkspace({
           <div className="live-task-receipt" role="status">
             <div className="live-task-head">
               <div>
-                <Pill tone={s0Open ? "green" : "blue"}>
-                  {s0Open ? "S0 GATE OPEN" : "真实任务已冻结"}
+                <Pill tone={s1Open ? "green" : s0Open ? "blue" : "neutral"}>
+                  {s1Open
+                    ? "S1 GATE OPEN"
+                    : s0Open
+                      ? "S0 GATE OPEN"
+                      : "真实任务已冻结"}
                 </Pill>
                 <strong>{bridge.task.task_id}</strong>
               </div>
               <button
                 className="run-agent-button"
                 type="button"
-                disabled={agentRunning || bridge.busy || s0Open}
-                onClick={() => void bridge.runS0()}
+                disabled={agentRunning || bridge.busy || Boolean(s1Open)}
+                onClick={() =>
+                  void (s0Open ? bridge.runS1() : bridge.runS0())
+                }
               >
-                {s0Open
-                  ? "S1 接口待接入"
+                {s1Open
+                  ? "S2 数据冻结待下一轮"
                   : agentRunning
-                    ? "Codex 正在完成 S0…"
-                    : "启动 Codex 完成 S0"}
+                    ? `Codex 正在完成 ${s0Open ? "S1" : "S0"}…`
+                    : s0Open
+                      ? "启动并行 Codex 完成 S1"
+                      : "启动 Codex 完成 S0"}
               </button>
             </div>
             <div className="live-event-list">
@@ -256,9 +389,38 @@ function IntakeWorkspace({
                 </div>
               ))}
             </div>
+            {epistemic && (
+              <div className="epistemic-summary">
+                <div>
+                  <span>盲探索分支</span>
+                  <strong>{epistemic.branch_count}</strong>
+                </div>
+                <div>
+                  <span>来源隔离</span>
+                  <strong>
+                    {epistemic.independence_passed
+                      ? `${epistemic.effective_independent_branches} · PASS`
+                      : "FAIL"}
+                  </strong>
+                </div>
+                <div>
+                  <span>受控共享包</span>
+                  <strong>{epistemic.disclosure_packet_count}</strong>
+                </div>
+                <div>
+                  <span>跨范式迁移</span>
+                  <strong>
+                    {epistemic.transfer_assessment_count}/
+                    {epistemic.transfer_count}
+                  </strong>
+                </div>
+              </div>
+            )}
             <p>
               Graph verified:{" "}
               {bridge.task.workflow.graph_verified ? "true" : "false"} ·
+              cross-task experience:{" "}
+              {epistemic?.cross_task_use_permitted ? "permitted" : "quarantined"} ·
               scientific qualification: false · real-world action: false
             </p>
           </div>
@@ -407,8 +569,8 @@ function ContextRail({ bridge }: { bridge: StudioBridge }) {
         </strong>
         <p>
           {bridge.connected
-            ? "网页现在可以创建真实 FMA 工作区并启动受控 S0；S1–S6 仍按阶段逐步接入。"
-            : "在本机启动 Studio Bridge 后，网页可以创建真实任务并让 Codex 完成受控 S0。"}
+            ? "网页现在可以启动真实 S0，并在 Gate 打开后执行四分支盲探索、受控知识共享和独立双审的 S1。"
+            : "在本机启动 Studio Bridge 后，网页可以让 Codex 完成受控 S0–S1；S2–S6 仍按阶段接入。"}
         </p>
       </section>
     </aside>
@@ -580,7 +742,7 @@ export default function Home() {
           <span className="brand-mark">F</span>
           <span>
             <strong>FMA</strong>
-            <small>MODELING STUDIO · V5.7</small>
+            <small>MODELING STUDIO · V5.8</small>
           </span>
         </button>
 
@@ -613,7 +775,7 @@ export default function Home() {
           <span>
             {bridge.connected ? "本地内核已连接" : "前端已就绪"}
             <small>
-              {bridge.connected ? "S0 真实执行可用" : "执行服务待连接"}
+              {bridge.connected ? "S0–S1 真实执行可用" : "执行服务待连接"}
             </small>
           </span>
         </div>
@@ -667,6 +829,9 @@ export default function Home() {
             if (viewingCompletedTask) setView("workspace");
           }}
           completed={false}
+          s0Open={
+            bridge.task?.workflow.stage_statuses.S0 === "gate_open"
+          }
         />
 
         <div className="sidebar-foot">
@@ -686,6 +851,9 @@ export default function Home() {
                   setObjective={setObjective}
                   bridge={bridge}
                 />
+              ) : selectedStage === "S1" &&
+                bridge.task?.workflow.stage_statuses.S0 === "gate_open" ? (
+                <S1Workspace bridge={bridge} />
               ) : (
                 <LockedStage
                   stageId={selectedStage}
