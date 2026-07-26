@@ -28,36 +28,39 @@ async function render() {
   );
 }
 
-test("server-renders the governed FMA public result", async () => {
+test("server-renders the real modeling workbench", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>FMA · 数学建模智能体控制台<\/title>/i);
-  assert.match(html, /模型不是一次命中/);
-  assert.match(html, /L0–L4/);
-  assert.match(html, /PRIVATE EVALUATION/);
-  assert.match(html, /BLOCKED/);
-  assert.match(html, /对数漂移/);
-  assert.match(html, /aria-pressed="true"/);
+  assert.match(html, /<title>FMA · 真实数学建模工作台<\/title>/i);
+  assert.match(html, /从真实问题开始/);
+  assert.match(html, /你现在想解决什么/);
+  assert.match(html, /系统边界是什么/);
+  assert.match(html, /Graph 贯穿其中/);
+  assert.match(html, /执行服务待接入/);
+  assert.match(html, /新建真实任务/);
   assert.match(html, /https:\/\/fma\.example\/og\.png/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });
 
-test("keeps evidence, graph, and authority data explicit in source", async () => {
+test("keeps workflow, execution truth, and authority explicit in source", async () => {
   const [page, data, layout] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/modeling-data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /<canvas/);
-  assert.match(page, /aria-pressed=\{selectedNode === item\.id\}/);
-  assert.match(page, /PRIVATE EVALUATION/);
+  assert.match(page, /建立本地任务草案/);
+  assert.match(page, /本页面没有伪造这次模型调用/);
+  assert.match(page, /启动 Agent · 待接入执行服务/);
+  assert.match(page, /type="file"/);
+  assert.match(page, /AUTHORITY BOUNDARY/);
   assert.match(data, /\{ label: "科学资格", value: "FALSE" \}/);
-  assert.match(page, /公开通过，不代表外部资格/);
-  assert.match(page, /EXTERNAL HOST · NOT RUN/);
+  assert.match(data, /id: "S0"/);
+  assert.match(data, /id: "S6"/);
+  assert.match(data, /role: "Harness"/);
   assert.match(layout, /generateMetadata/);
   assert.doesNotMatch(page, /react-loading-skeleton|SkeletonPreview/);
 });

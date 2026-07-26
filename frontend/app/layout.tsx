@@ -23,9 +23,9 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
   const base = new URL(`${protocol}://${host}`);
-  const title = "FMA · 数学建模智能体控制台";
+  const title = "FMA · 真实数学建模工作台";
   const description =
-    "图原生、证据驱动的数学建模智能体控制台。查看模型演化、L0–L4 证据、预测注册与权限边界。";
+    "从真实问题出发，与 Agent 共同完成定义、候选竞争、证伪恢复、预测注册和可复现交付。";
 
   return {
     metadataBase: base,
@@ -40,7 +40,7 @@ export async function generateMetadata(): Promise<Metadata> {
           url: new URL("/og.png", base).toString(),
           width: 1792,
           height: 909,
-          alt: "FMA 数学建模智能体：模型在图中恢复",
+          alt: "FMA 数学建模智能体：从真实问题到可信交付",
         },
       ],
     },

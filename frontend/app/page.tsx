@@ -1,411 +1,594 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
-  candidates,
+  authorityRoles,
+  completedTask,
   evidenceLevels,
-  forecastSeries,
+  firstPrincipleQuestions,
   graphNodes,
-  task,
+  modelingLoop,
+  stages,
 } from "./modeling-data";
 
-function StatusMark({ status }: { status: string }) {
+type ViewId = "workspace" | "graph" | "delivery";
+
+const queryTypes = ["自动判断", "解释", "预测", "优化", "控制", "设计"];
+
+function Pill({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "blue" | "green" | "amber" | "red";
+}) {
+  return <span className={`pill pill-${tone}`}>{children}</span>;
+}
+
+function StageNavigator({
+  selectedStage,
+  setSelectedStage,
+  completed = false,
+}: {
+  selectedStage: string;
+  setSelectedStage: (stage: string) => void;
+  completed?: boolean;
+}) {
   return (
-    <span className={`status-mark status-${status.toLowerCase()}`}>
-      <span className="status-dot" aria-hidden="true" />
-      {status}
-    </span>
+    <div className="stage-list" aria-label="S0 到 S6 建模阶段">
+      {stages.map((stage, index) => {
+        const isActive = selectedStage === stage.id;
+        const isLocked = !completed && stage.status === "locked";
+        return (
+          <button
+            className={`stage-item ${isActive ? "stage-selected" : ""} ${
+              isLocked ? "stage-locked" : ""
+            }`}
+            key={stage.id}
+            type="button"
+            onClick={() => setSelectedStage(stage.id)}
+            aria-pressed={isActive}
+          >
+            <span className="stage-marker">
+              {completed ? "✓" : index === 0 ? "●" : index + 1}
+            </span>
+            <span className="stage-copy">
+              <strong>
+                {stage.id} · {stage.label}
+              </strong>
+              <small>{stage.detail}</small>
+            </span>
+            <span className="stage-owner">{stage.owner}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
-function ForecastChart() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-
-    const scale = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    context.scale(scale, scale);
-    context.clearRect(0, 0, width, height);
-
-    const pad = { top: 18, right: 18, bottom: 28, left: 42 };
-    const plotWidth = width - pad.left - pad.right;
-    const plotHeight = height - pad.top - pad.bottom;
-    const values = forecastSeries.map((point) => point.value);
-    const minimum = Math.min(...values) * 0.93;
-    const maximum = Math.max(...values) * 1.04;
-    const x = (index: number) =>
-      pad.left + (index / (forecastSeries.length - 1)) * plotWidth;
-    const y = (value: number) =>
-      pad.top + (1 - (value - minimum) / (maximum - minimum)) * plotHeight;
-
-    context.strokeStyle = "rgba(255,255,255,.08)";
-    context.lineWidth = 1;
-    context.fillStyle = "rgba(207,216,210,.52)";
-    context.font = "11px ui-monospace, SFMono-Regular, monospace";
-    context.textAlign = "right";
-    for (let index = 0; index <= 3; index += 1) {
-      const value = minimum + ((maximum - minimum) * index) / 3;
-      const lineY = y(value);
-      context.beginPath();
-      context.moveTo(pad.left, lineY);
-      context.lineTo(width - pad.right, lineY);
-      context.stroke();
-      context.fillText(value.toFixed(0), pad.left - 9, lineY + 4);
-    }
-
-    const observedCount = forecastSeries.filter(
-      (point) => point.kind === "observed",
-    ).length;
-    const splitX = x(observedCount - 0.5);
-    context.setLineDash([4, 5]);
-    context.strokeStyle = "rgba(255,202,106,.4)";
-    context.beginPath();
-    context.moveTo(splitX, pad.top);
-    context.lineTo(splitX, height - pad.bottom);
-    context.stroke();
-    context.setLineDash([]);
-
-    const drawLine = (
-      start: number,
-      end: number,
-      color: string,
-      dashed = false,
-    ) => {
-      context.strokeStyle = color;
-      context.lineWidth = 2.4;
-      context.lineJoin = "round";
-      context.lineCap = "round";
-      context.setLineDash(dashed ? [6, 5] : []);
-      context.beginPath();
-      for (let index = start; index <= end; index += 1) {
-        const point = forecastSeries[index];
-        if (index === start) context.moveTo(x(index), y(point.value));
-        else context.lineTo(x(index), y(point.value));
-      }
-      context.stroke();
-      context.setLineDash([]);
-    };
-
-    drawLine(0, observedCount - 1, "#62e6a7");
-    drawLine(observedCount - 1, forecastSeries.length - 1, "#ffca6a", true);
-
-    forecastSeries.slice(observedCount).forEach((point, offset) => {
-      const index = observedCount + offset;
-      context.fillStyle = "#ffca6a";
-      context.beginPath();
-      context.arc(x(index), y(point.value), 3.2, 0, Math.PI * 2);
-      context.fill();
-    });
-
-    context.fillStyle = "rgba(255,202,106,.78)";
-    context.textAlign = "left";
-    context.fillText("预测注册点", splitX + 8, pad.top + 11);
-  }, []);
+function IntakeWorkspace({
+  objective,
+  setObjective,
+}: {
+  objective: string;
+  setObjective: (value: string) => void;
+}) {
+  const [queryType, setQueryType] = useState("自动判断");
+  const [files, setFiles] = useState<string[]>([]);
+  const [draftCreated, setDraftCreated] = useState(false);
+  const canCreate = objective.trim().length >= 12;
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="forecast-canvas"
-      aria-label="公开观测与四步注册预测折线图"
-    />
+    <>
+      <section className="work-hero">
+        <div className="work-hero-copy">
+          <div className="section-kicker">
+            <span>ACTIVE STAGE · S0</span>
+            <Pill tone="blue">问题定义中</Pill>
+          </div>
+          <h1>从真实问题开始，<br />不是从模型名称开始。</h1>
+          <p>
+            描述你真正要理解、预测或优化的现实对象。Agent
+            会先澄清边界、决策和错误代价，再组织经典骨架、生成变体与证伪路线。
+          </p>
+        </div>
+        <div className="principle-chain" aria-label="建模主链">
+          <span>现实问题</span>
+          <i>→</i>
+          <span>可证伪任务</span>
+          <i>→</i>
+          <span>候选竞争</span>
+          <i>→</i>
+          <span>可信交付</span>
+        </div>
+      </section>
+
+      <section className="work-card intake-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">01 / TASK INTAKE</span>
+            <h2>你现在想解决什么？</h2>
+          </div>
+          <span className="required-note">问题、数据和价值约束</span>
+        </div>
+
+        <label className="objective-field">
+          <span>现实问题</span>
+          <textarea
+            value={objective}
+            onChange={(event) => {
+              setObjective(event.target.value);
+              setDraftCreated(false);
+            }}
+            placeholder="例如：我们需要预测未来 12 周的急诊到诊量，用于排班；漏配人手的代价高于富余，但不能使用患者级敏感数据……"
+            rows={5}
+          />
+          <small>
+            建议包含：对象、时间范围、可用数据、最终决策和最不能接受的错误。
+          </small>
+        </label>
+
+        <div className="intake-controls">
+          <div className="control-block">
+            <span className="control-label">问题类型</span>
+            <div className="segmented" role="group" aria-label="选择问题类型">
+              {queryTypes.map((type) => (
+                <button
+                  type="button"
+                  key={type}
+                  className={queryType === type ? "selected" : ""}
+                  onClick={() => setQueryType(type)}
+                  aria-pressed={queryType === type}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="file-drop">
+            <input
+              type="file"
+              multiple
+              onChange={(event) =>
+                setFiles(
+                  Array.from(event.target.files ?? []).map((file) => file.name),
+                )
+              }
+            />
+            <span className="file-plus">+</span>
+            <span>
+              <strong>{files.length ? `已选择 ${files.length} 个文件` : "添加数据或题面"}</strong>
+              <small>
+                {files.length
+                  ? files.join(" · ")
+                  : "CSV、XLSX、PDF、图片或说明文档"}
+              </small>
+            </span>
+          </label>
+        </div>
+
+        <div className="intake-footer">
+          <div className="truth-note">
+            <span aria-hidden="true">i</span>
+            文件当前只停留在浏览器；未接入执行服务前不会上传或运行模型。
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!canCreate}
+            onClick={() => setDraftCreated(true)}
+          >
+            建立本地任务草案
+            <span aria-hidden="true">→</span>
+          </button>
+        </div>
+
+        {draftCreated && (
+          <div className="draft-receipt" role="status">
+            <div>
+              <Pill tone="green">草案已建立</Pill>
+              <strong>{queryType}型建模任务</strong>
+            </div>
+            <p>
+              下一步应由真实 Agent 生成 S0
+              问题契约并接受 Harness 检查；本页面没有伪造这次模型调用。
+            </p>
+            <button type="button" disabled title="等待执行服务 API">
+              启动 Agent · 待接入执行服务
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section className="work-card diagnostic-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">02 / REGIME DIAGNOSIS</span>
+            <h2>Agent 首先要回答的四个问题</h2>
+          </div>
+          <Pill>对应真实 S0 契约</Pill>
+        </div>
+        <div className="question-grid">
+          {firstPrincipleQuestions.map((question) => (
+            <article key={question.id}>
+              <span>{question.index}</span>
+              <strong>{question.title}</strong>
+              <p>{question.description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
 
-export default function Home() {
+function LockedStage({
+  stageId,
+  setSelectedStage,
+}: {
+  stageId: string;
+  setSelectedStage: (stage: string) => void;
+}) {
+  const stage = stages.find((item) => item.id === stageId)!;
+  return (
+    <section className="locked-canvas">
+      <span className="locked-token">{stage.id}</span>
+      <Pill tone="amber">前置 Gate 未打开</Pill>
+      <h1>{stage.label}</h1>
+      <p>
+        {stage.detail}。这一阶段不能靠用户点击直接越过；必须先完成并冻结 S0
+        问题契约，随后由 Graph 开放下一前沿。
+      </p>
+      <div className="locked-responsibility">
+        <span>本阶段主要责任</span>
+        <strong>{stage.owner}</strong>
+      </div>
+      <button
+        className="secondary-button"
+        type="button"
+        onClick={() => setSelectedStage("S0")}
+      >
+        返回 S0 定义问题
+      </button>
+    </section>
+  );
+}
+
+function ContextRail() {
+  return (
+    <aside className="context-rail">
+      <section className="rail-card">
+        <div className="rail-heading">
+          <span>本次建模怎样完成</span>
+          <small>Graph 贯穿其中</small>
+        </div>
+        <div className="loop-list">
+          {modelingLoop.map((step, index) => (
+            <div
+              className={`loop-item loop-${step.status}`}
+              key={step.id}
+            >
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <strong>{step.label}</strong>
+                <p>{step.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rail-card">
+        <div className="rail-heading">
+          <span>三种责任不混合</span>
+          <small>不是让人替 Agent 建模</small>
+        </div>
+        <div className="role-list">
+          {authorityRoles.map((item) => (
+            <article key={item.role}>
+              <span className={`role-dot role-${item.tone}`} />
+              <div>
+                <strong>{item.role}</strong>
+                <small>{item.action}</small>
+                <p>{item.description}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="rail-card rail-boundary">
+        <span>当前产品状态</span>
+        <strong>前端工作台已就绪</strong>
+        <p>
+          新任务执行 API 尚未接入。本地内核已经具备 S0–S6、候选演化、检查、Gate
+          与报告能力，但网页还不能直接调度它。
+        </p>
+      </section>
+    </aside>
+  );
+}
+
+function GraphView() {
   const [selectedNode, setSelectedNode] = useState("recovery");
-  const [showMetrics, setShowMetrics] = useState(false);
   const node = graphNodes.find((item) => item.id === selectedNode)!;
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#overview" aria-label="FMA 首页">
-          <span className="brand-glyph">F</span>
-          <span>
-            <strong>FMA</strong>
-            <small>GRAPH-NATIVE · V5.7</small>
-          </span>
-        </a>
-        <div className="topbar-center">
-          <span className="connection-dot" />
-          建模内核已连接
+    <div className="artifact-view">
+      <header className="artifact-header">
+        <div>
+          <span className="section-kicker plain">REAL RUN · ITERATION 36</span>
+          <h1>一次真实建模，不是一次猜中。</h1>
+          <p>
+            这里保留了初始失败、换表征、候选淘汰与最终冻结预测。它是工作台未来执行新任务时应持续产生的可审计过程。
+          </p>
         </div>
-        <div className="topbar-actions">
-          <span className="task-chip">I36 · 未见任务</span>
-          <a className="evidence-link" href="#evidence">
-            查看证据
-            <span aria-hidden="true">↗</span>
-          </a>
-        </div>
+        <Pill tone="green">{completedTask.status}</Pill>
       </header>
 
-      <aside className="sidebar" aria-label="控制台导航">
-        <nav>
-          <p className="nav-label">工作区</p>
-          <a className="nav-item active" href="#overview">
-            <span>01</span>运行总览
-          </a>
-          <a className="nav-item" href="#graph">
-            <span>02</span>模型图
-          </a>
-          <a className="nav-item" href="#forecast">
-            <span>03</span>预测
-          </a>
-          <a className="nav-item" href="#evidence">
-            <span>04</span>证据层
-          </a>
-          <a className="nav-item" href="#boundary">
-            <span>05</span>权限边界
-          </a>
-        </nav>
-
-        <div className="sidebar-meta">
-          <p>当前任务</p>
-          <strong>{task.shortId}</strong>
-          <span>公开运行 · 已冻结</span>
-          <div className="mini-rule" />
-          <p>实现提交</p>
-          <code>{task.commit}</code>
+      <section className="work-card run-summary">
+        <div>
+          <span>任务</span>
+          <strong>{completedTask.title}</strong>
         </div>
-      </aside>
+        <div>
+          <span>最终候选</span>
+          <strong>{completedTask.selectedModel}</strong>
+        </div>
+        <div>
+          <span>私有评估</span>
+          <strong className="amber-text">NOT RUN · 0/1</strong>
+        </div>
+      </section>
 
-      <main>
-        <section className="hero" id="overview">
-          <div className="eyebrow">
-            <span>PUBLIC GATE</span>
-            <StatusMark status="ELIGIBLE" />
+      <section className="work-card graph-card">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker plain">MODEL LINEAGE</span>
+            <h2>失败与恢复都留在同一张图里</h2>
           </div>
-          <div className="hero-grid">
-            <div>
-              <h1>
-                模型不是一次命中，
-                <br />
-                而是在图中恢复。
-              </h1>
-              <p className="hero-copy">
-                首次真实双重未见任务中，初始 ODE 在 L3
-                失败。系统没有放宽标准，而是切换表征，筛出可复现的对数增长模型并注册四步预测。
-              </p>
+          <span className="required-note">选择节点查看证据</span>
+        </div>
+        <div className="run-graph" aria-label="I36 候选演化图">
+          {graphNodes.map((item, index) => (
+            <div className="run-node-wrap" key={item.id}>
+              <button
+                className={`run-node run-${item.tone} ${
+                  item.id === selectedNode ? "selected" : ""
+                }`}
+                type="button"
+                onClick={() => setSelectedNode(item.id)}
+                aria-pressed={item.id === selectedNode}
+              >
+                <small>{item.status}</small>
+                <strong>{item.label}</strong>
+              </button>
+              {index < graphNodes.length - 1 && <span>→</span>}
             </div>
-            <div className="hero-verdict">
-              <div className="verdict-ring">
-                <strong>5/5</strong>
-                <span>证据层通过</span>
-              </div>
-              <p>
-                公开科学接受
-                <small>不等于外部科学资格</small>
-              </p>
-            </div>
+          ))}
+        </div>
+        <article className={`node-detail detail-${node.tone}`}>
+          <div>
+            <span>SELECTED NODE · {node.status}</span>
+            <h3>{node.title}</h3>
+            <p>{node.description}</p>
           </div>
-
-          <div className="metric-strip">
-            <div>
-              <span>公开门</span>
-              <strong className="accent-green">ELIGIBLE</strong>
-            </div>
-            <div>
-              <span>新鲜重放</span>
-              <strong>2 / 2</strong>
-            </div>
-            <div>
-              <span>可接受恢复</span>
-              <strong>1 / 2</strong>
-            </div>
-            <div>
-              <span>私测消耗</span>
-              <strong>0 / 1</strong>
-            </div>
-            <div>
-              <span>现实行动</span>
-              <strong className="muted-value">未授权</strong>
-            </div>
-          </div>
-        </section>
-
-        <section className="panel graph-panel" id="graph">
-          <div className="section-heading">
-            <div>
-              <span className="section-index">02 / MODEL GRAPH</span>
-              <h2>贯穿全链路的候选图</h2>
-            </div>
-            <p>点击节点查看决策依据</p>
-          </div>
-
-          <div className="graph-flow" role="list" aria-label="模型执行图">
-            {graphNodes.map((item, index) => (
-              <div className="graph-step-wrap" key={item.id}>
-                <button
-                  className={`graph-node graph-${item.tone} ${
-                    selectedNode === item.id ? "selected" : ""
-                  }`}
-                  onClick={() => setSelectedNode(item.id)}
-                  type="button"
-                  aria-pressed={selectedNode === item.id}
-                >
-                  <span className="node-index">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <strong>{item.label}</strong>
-                  <small>{item.status}</small>
-                </button>
-                {index < graphNodes.length - 1 && (
-                  <span className="graph-arrow" aria-hidden="true">
-                    →
-                  </span>
-                )}
+          <dl>
+            {node.facts.map((fact) => (
+              <div key={fact.label}>
+                <dt>{fact.label}</dt>
+                <dd>{fact.value}</dd>
               </div>
             ))}
-          </div>
+          </dl>
+        </article>
+      </section>
+    </div>
+  );
+}
 
-          <div className={`node-inspector inspector-${node.tone}`}>
+function DeliveryView() {
+  return (
+    <div className="artifact-view">
+      <header className="artifact-header">
+        <div>
+          <span className="section-kicker plain">EVIDENCE & DELIVERY</span>
+          <h1>交付的不只是答案，<br />而是一条可复查的论证链。</h1>
+          <p>
+            用户得到模型、代码、预测与报告；Verifier
+            得到精确输入、检查收据和失败历史；最终决策仍由价值所有者负责。
+          </p>
+        </div>
+        <Pill tone="amber">外部资格未授予</Pill>
+      </header>
+
+      <section className="delivery-grid">
+        <div className="work-card evidence-card">
+          <div className="card-heading">
             <div>
-              <span>SELECTED NODE · {node.status}</span>
-              <h3>{node.title}</h3>
+              <span className="section-kicker plain">L0–L4</span>
+              <h2>I36 公开证据</h2>
             </div>
-            <p>{node.description}</p>
-            <dl>
-              {node.facts.map((fact) => (
-                <div key={fact.label}>
-                  <dt>{fact.label}</dt>
-                  <dd>{fact.value}</dd>
-                </div>
-              ))}
-            </dl>
           </div>
-        </section>
+          <div className="evidence-list">
+            {evidenceLevels.map((item) => (
+              <article key={item.level}>
+                <span>{item.level}</span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <p>{item.evidence}</p>
+                </div>
+                <Pill tone="green">{item.status}</Pill>
+              </article>
+            ))}
+          </div>
+        </div>
 
-        <div className="two-column">
-          <section className="panel forecast-panel" id="forecast">
-            <div className="section-heading compact">
+        <div className="delivery-stack">
+          <section className="work-card prediction-card">
+            <div className="card-heading">
               <div>
-                <span className="section-index">03 / FORECAST</span>
-                <h2>公开序列与注册预测</h2>
-              </div>
-              <div className="legend" aria-label="图例">
-                <span className="legend-observed">公开观测</span>
-                <span className="legend-predicted">冻结预测</span>
+                <span className="section-kicker plain">FROZEN OUTPUT</span>
+                <h2>四步注册预测</h2>
               </div>
             </div>
-            <ForecastChart />
-            <div className="forecast-values">
-              {task.predictions.map((value, index) => (
+            <div className="prediction-values">
+              {completedTask.predictions.map((value, index) => (
                 <div key={value}>
                   <span>H{index + 1}</span>
                   <strong>{value.toFixed(2)}</strong>
                 </div>
               ))}
             </div>
-            <p className="chart-note">
-              纵轴为盲化正值指数；私有目标未读取，预测哈希已冻结。
-            </p>
           </section>
 
-          <section className="panel candidates-panel">
-            <div className="section-heading compact">
-              <div>
-                <span className="section-index">CANDIDATE ROUTER</span>
-                <h2>为什么不是最低误差者</h2>
-              </div>
-            </div>
-            <div className="candidate-list">
-              {candidates.map((candidate) => (
-                <article
-                  className={`candidate-card ${
-                    candidate.selected ? "candidate-selected" : ""
-                  }`}
-                  key={candidate.id}
-                >
-                  <div>
-                    <span>{candidate.family}</span>
-                    <strong>{candidate.name}</strong>
-                  </div>
-                  <StatusMark status={candidate.status} />
-                  <dl>
-                    <div>
-                      <dt>验证相对 RMSE</dt>
-                      <dd>{candidate.rmse}</dd>
-                    </div>
-                    <div>
-                      <dt>相对持久性提升</dt>
-                      <dd>{candidate.improvement}</dd>
-                    </div>
-                  </dl>
-                  <p>{candidate.reason}</p>
-                </article>
-              ))}
-            </div>
+          <section className="authority-warning">
+            <span>AUTHORITY BOUNDARY</span>
+            <h2>能完成公开建模，不等于能给自己授予科学资格。</h2>
+            <p>
+              外部私测仍为 NOT RUN；科学资格与现实行动权限均为 false。前端不能把流程进度渲染成更强的结论。
+            </p>
           </section>
         </div>
+      </section>
+    </div>
+  );
+}
 
-        <section className="panel evidence-panel" id="evidence">
-          <div className="section-heading">
-            <div>
-              <span className="section-index">04 / EVIDENCE</span>
-              <h2>不是一枚总分，而是五层可追溯证据</h2>
+export default function Home() {
+  const [view, setView] = useState<ViewId>("workspace");
+  const [selectedStage, setSelectedStage] = useState<string>("S0");
+  const [objective, setObjective] = useState("");
+  const viewingCompletedTask = view !== "workspace";
+
+  return (
+    <div className="studio-shell">
+      <header className="studio-topbar">
+        <button
+          className="brand"
+          type="button"
+          onClick={() => setView("workspace")}
+          aria-label="返回 FMA 建模工作台"
+        >
+          <span className="brand-mark">F</span>
+          <span>
+            <strong>FMA</strong>
+            <small>MODELING STUDIO · V5.7</small>
+          </span>
+        </button>
+
+        <nav className="view-tabs" aria-label="主视图">
+          <button
+            type="button"
+            className={view === "workspace" ? "active" : ""}
+            onClick={() => setView("workspace")}
+          >
+            建模工作台
+          </button>
+          <button
+            type="button"
+            className={view === "graph" ? "active" : ""}
+            onClick={() => setView("graph")}
+          >
+            运行图
+          </button>
+          <button
+            type="button"
+            className={view === "delivery" ? "active" : ""}
+            onClick={() => setView("delivery")}
+          >
+            证据与交付
+          </button>
+        </nav>
+
+        <div className="runtime-state">
+          <span className="runtime-dot" />
+          <span>
+            前端已就绪
+            <small>执行服务待接入</small>
+          </span>
+        </div>
+      </header>
+
+      <aside className="studio-sidebar">
+        <button
+          className="new-task-button"
+          type="button"
+          onClick={() => {
+            setView("workspace");
+            setSelectedStage("S0");
+          }}
+        >
+          <span>+</span>
+          新建真实任务
+        </button>
+
+        <div className="task-switcher">
+          <p>任务</p>
+          <button
+            className={!viewingCompletedTask ? "selected" : ""}
+            type="button"
+            onClick={() => setView("workspace")}
+          >
+            <span className="task-status task-draft" />
+            <span>
+              <strong>未命名建模任务</strong>
+              <small>本地草案 · S0</small>
+            </span>
+          </button>
+          <button
+            className={viewingCompletedTask ? "selected" : ""}
+            type="button"
+            onClick={() => setView("graph")}
+          >
+            <span className="task-status task-complete" />
+            <span>
+              <strong>{completedTask.shortId}</strong>
+              <small>公开运行 · 已完成</small>
+            </span>
+          </button>
+        </div>
+
+        <div className="sidebar-divider" />
+        <p className="sidebar-label">建模阶段</p>
+        <StageNavigator
+          selectedStage={selectedStage}
+          setSelectedStage={(stage) => {
+            setSelectedStage(stage);
+            if (viewingCompletedTask) setView("workspace");
+          }}
+          completed={false}
+        />
+
+        <div className="sidebar-foot">
+          <span>控制面</span>
+          <strong>Graph-native S0–S6</strong>
+          <small>阶段不能由模型自审或跳过</small>
+        </div>
+      </aside>
+
+      <main className="studio-main">
+        {view === "workspace" && (
+          <div className="workspace-layout">
+            <div className="work-column">
+              {selectedStage === "S0" ? (
+                <IntakeWorkspace
+                  objective={objective}
+                  setObjective={setObjective}
+                />
+              ) : (
+                <LockedStage
+                  stageId={selectedStage}
+                  setSelectedStage={setSelectedStage}
+                />
+              )}
             </div>
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => setShowMetrics((value) => !value)}
-              aria-expanded={showMetrics}
-            >
-              {showMetrics ? "收起关键指标" : "展开关键指标"}
-              <span aria-hidden="true">{showMetrics ? "−" : "+"}</span>
-            </button>
+            <ContextRail />
           </div>
-
-          <div className="evidence-table" role="table">
-            {evidenceLevels.map((level) => (
-              <article className="evidence-row" role="row" key={level.level}>
-                <div className="level-token">{level.level}</div>
-                <div className="evidence-copy">
-                  <strong>{level.title}</strong>
-                  <p>{level.description}</p>
-                  {showMetrics && (
-                    <div className="evidence-metrics">
-                      {level.metrics.map((metric) => (
-                        <span key={metric}>{metric}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <StatusMark status="PASS" />
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="boundary" id="boundary">
-          <div className="boundary-icon" aria-hidden="true">
-            !
-          </div>
-          <div>
-            <span className="section-index">05 / AUTHORITY BOUNDARY</span>
-            <h2>公开通过，不代表外部资格。</h2>
-            <p>
-              预测已经注册，但私有评估必须由独立信任节点完成。同机新会话只能提供上下文隔离，不能提供密钥、权限与管理权隔离。
-            </p>
-          </div>
-          <div className="boundary-status">
-            <span>PRIVATE EVALUATION</span>
-            <strong>BLOCKED</strong>
-            <small>EXTERNAL HOST · NOT RUN</small>
-          </div>
-        </section>
-
-        <footer>
-          <span>FMA · TRUSTWORTHY MATHEMATICAL MODELLING KERNEL</span>
-          <span>任务 {task.shortId} · 所有数值均来自冻结公开证据</span>
-        </footer>
+        )}
+        {view === "graph" && <GraphView />}
+        {view === "delivery" && <DeliveryView />}
       </main>
     </div>
   );
