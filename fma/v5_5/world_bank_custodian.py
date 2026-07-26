@@ -491,7 +491,7 @@ def materialize_world_bank_campaign_v55(
     output_dir: Path,
     fetcher: FetcherV55 = _default_fetcher,
     retrieved_at: datetime | None = None,
-    task_iteration_id: Literal["i34", "i35"] = "i34",
+    task_iteration_id: Literal["i34", "i35", "i36"] = "i34",
 ) -> WorldBankCustodianSummaryV55:
     """Select, encrypt, and write only generator-safe public artifacts."""
 
