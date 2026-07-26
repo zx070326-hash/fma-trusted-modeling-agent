@@ -216,6 +216,17 @@ def _adaptive_protocol(
         unseen_source_adapter_source_sha256=hashlib.sha256(
             (root / "fma" / "v5_7" / "unseen_source.py").read_bytes()
         ).hexdigest(),
+        unseen_source_core_source_sha256=hashlib.sha256(
+            (root / "fma" / "v5_6" / "unseen_source.py").read_bytes()
+        ).hexdigest(),
+        world_bank_custodian_source_sha256=hashlib.sha256(
+            (
+                root
+                / "fma"
+                / "v5_5"
+                / "world_bank_custodian.py"
+            ).read_bytes()
+        ).hexdigest(),
         public_runner_source_sha256=hashlib.sha256(
             (
                 root

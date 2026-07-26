@@ -76,6 +76,8 @@ class AdaptiveCampaignProtocolV57(StrictModel):
     primary_adapter_source_sha256: Sha256
     adaptive_adapter_source_sha256: Sha256
     unseen_source_adapter_source_sha256: Sha256
+    unseen_source_core_source_sha256: Sha256
+    world_bank_custodian_source_sha256: Sha256
     public_runner_source_sha256: Sha256
     primary_candidate_families: list[Identifier]
     primary_residual_modes: list[Identifier]
@@ -652,6 +654,18 @@ def run_public_adaptive_campaign_v57(
         != hashlib.sha256(
             (package / "unseen_source.py").read_bytes()
         ).hexdigest()
+        or protocol.unseen_source_core_source_sha256
+        != hashlib.sha256(
+            (package.parent / "v5_6" / "unseen_source.py").read_bytes()
+        ).hexdigest()
+        or protocol.world_bank_custodian_source_sha256
+        != hashlib.sha256(
+            (
+                package.parent
+                / "v5_5"
+                / "world_bank_custodian.py"
+            ).read_bytes()
+        ).hexdigest()
         or protocol.public_runner_source_sha256
         != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         or plan.task_id != launch.snapshot.task_id
@@ -916,6 +930,14 @@ def verify_public_adaptive_campaign_v57(
     unseen_source_hash = hashlib.sha256(
         (package / "unseen_source.py").read_bytes()
     ).hexdigest()
+    unseen_source_core_hash = hashlib.sha256(
+        (package.parent / "v5_6" / "unseen_source.py").read_bytes()
+    ).hexdigest()
+    world_bank_custodian_hash = hashlib.sha256(
+        (
+            package.parent / "v5_5" / "world_bank_custodian.py"
+        ).read_bytes()
+    ).hexdigest()
     runner_source_hash = hashlib.sha256(
         Path(__file__).read_bytes()
     ).hexdigest()
@@ -938,6 +960,10 @@ def verify_public_adaptive_campaign_v57(
         or protocol.primary_adapter_source_sha256 != primary_source_hash
         or protocol.adaptive_adapter_source_sha256 != adaptive_source_hash
         or protocol.unseen_source_adapter_source_sha256 != unseen_source_hash
+        or protocol.unseen_source_core_source_sha256
+        != unseen_source_core_hash
+        or protocol.world_bank_custodian_source_sha256
+        != world_bank_custodian_hash
         or protocol.public_runner_source_sha256 != runner_source_hash
         or protocol.protocol_hash != result.campaign_protocol_hash
         or plan.plan_hash != result.forecast_plan_hash
