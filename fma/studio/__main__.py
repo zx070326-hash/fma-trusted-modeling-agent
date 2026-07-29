@@ -6,7 +6,11 @@ import argparse
 import os
 from pathlib import Path
 
-from fma.codex_driver import CodexCLIConfig
+from fma.codex_driver import (
+    DEFAULT_EXPECTED_CLI_VERSION,
+    CodexCLIConfig,
+)
+from fma.codex_wsl import WslCodexRuntimeV65
 from fma.v5.__main__ import _decode_key
 
 from .server import StudioHTTPServer
@@ -26,6 +30,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--authority-key-id", default="studio-local-v1")
     parser.add_argument("--token", default=os.environ.get("FMA_STUDIO_TOKEN"))
     parser.add_argument("--codex-bin")
+    parser.add_argument(
+        "--codex-runtime",
+        choices=("native", "wsl"),
+        default="native",
+        help="Use native execution or the Windows-to-WSL Codex transport.",
+    )
+    parser.add_argument(
+        "--expected-codex-cli-version",
+        default=DEFAULT_EXPECTED_CLI_VERSION,
+        help="Exact Codex CLI version required by the stage driver.",
+    )
+    parser.add_argument("--wsl-distribution")
+    parser.add_argument(
+        "--model",
+        help=(
+            "Pin the model requested from Codex CLI. The receipt records this "
+            "request but still marks served-model attestation as unavailable."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
@@ -49,6 +72,13 @@ def main() -> int:
     codex_config = CodexCLIConfig(
         executable=Path(args.codex_bin).resolve(strict=True)
         if args.codex_bin
+        else None,
+        requested_model=args.model,
+        expected_cli_version=args.expected_codex_cli_version,
+    )
+    wsl_runtime = (
+        WslCodexRuntimeV65(distribution=args.wsl_distribution)
+        if args.codex_runtime == "wsl"
         else None
     )
     service = StudioTaskService(
@@ -56,6 +86,8 @@ def main() -> int:
         authority_key=authority_key,
         authority_key_id=args.authority_key_id,
         codex_config=codex_config,
+        codex_process_runner=wsl_runtime,
+        codex_cli_locator=wsl_runtime.locate if wsl_runtime else None,
     )
     server = StudioHTTPServer(
         (args.host, args.port),
@@ -74,6 +106,8 @@ def main() -> int:
         pass
     finally:
         server.server_close()
+        if wsl_runtime is not None:
+            wsl_runtime.close()
     return 0
 
 

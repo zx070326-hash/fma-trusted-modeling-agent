@@ -64,6 +64,31 @@ test("keeps workflow, execution truth, and authority explicit in source", async 
   assert.match(page, /盲探索分支/);
   assert.match(page, /共享知识不等于共享结论/);
   assert.match(page, /cross-task experience/);
+  assert.match(page, /V6\.9 development portfolio evidence/);
+  assert.match(page, /baseline guard/);
+  assert.match(page, /development evidence only/);
+  assert.match(page, /尚未完整：前端不会发送部分 decision_use/);
+  assert.match(page, /public_data/);
+  assert.match(page, /World Bank 注册源/);
+  assert.match(page, /fixture_only（默认 false；仅 development/);
+  assert.match(page, /typed semantics admission/);
+  assert.match(page, /executed semantics/);
+  assert.match(page, /V6\.7 pre-data first/);
+  assert.match(page, /Prepare V6\.7 pre-data contracts/);
+  assert.match(page, /V6\.7 RECOVERY PENDING/);
+  assert.match(page, /Resume exact pre-data transaction/);
+  assert.match(page, /V6\.7 STALE S0 INTENT/);
+  assert.match(page, /Stale pre-data intent requires graph recovery/);
+  assert.match(page, /predataStalePending/);
+  assert.match(page, /bound to an obsolete S0 gate/);
+  assert.match(page, /predataRequestFrozen/);
+  assert.match(page, /bridge\.reconcilePredata\(\)/);
+  assert.match(page, /usePredataV67 && !predataPrepared/);
+  assert.match(page, /predata_v67\.workflow_mode === "v67"/);
+  assert.doesNotMatch(
+    page,
+    /next_valid_actions\.includes\("prepare_predata_v67"\)/,
+  );
   assert.match(page, /type="file"/);
   assert.match(page, /AUTHORITY BOUNDARY/);
   assert.match(data, /\{ label: "科学资格", value: "FALSE" \}/);
@@ -72,8 +97,24 @@ test("keeps workflow, execution truth, and authority explicit in source", async 
   assert.match(data, /role: "Harness"/);
   assert.match(bridge, /X-FMA-Bridge-Token/);
   assert.match(bridge, /run-s1/);
+  assert.match(bridge, /prepare-predata/);
+  assert.match(bridge, /preparePredata/);
+  assert.match(bridge, /reconcile-predata/);
+  assert.match(bridge, /reconcilePredata/);
+  assert.match(bridge, /RECOVERY_PENDING/);
+  assert.match(bridge, /STALE_PENDING/);
+  assert.match(bridge, /portfolio_v69/);
+  assert.match(bridge, /s1_s6_gates_touched: false/);
   assert.match(bridge, /run-backhalf/);
   assert.match(bridge, /data\/ode/);
+  assert.match(bridge, /data\/world-bank/);
+  assert.match(bridge, /assertCompleteDecisionUse/);
+  assert.match(bridge, /workflow_mode: options\.workflow_mode/);
+  assert.match(bridge, /preparedPredataRequestFromSnapshot\(task\)/);
+  assert.doesNotMatch(
+    bridge,
+    /useState<StudioWorldBankDataRequestV62 \| null>/,
+  );
   assert.match(bridge, /只允许连接本机 loopback 地址/);
   assert.doesNotMatch(bridge, /localStorage|sessionStorage/);
   assert.match(layout, /generateMetadata/);

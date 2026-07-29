@@ -14,10 +14,26 @@ from .service import StudioBridgeError, StudioTaskService
 
 _TASK_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)")
 _RUN_S0_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s0")
+_PREPARE_PREDATA_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/prepare-predata")
+_RECONCILE_PREDATA_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/reconcile-predata"
+)
 _RUN_S1_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s1")
 _ODE_DATA_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/data/ode")
-_RUN_BACKHALF_ROUTE = re.compile(
-    r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-backhalf"
+_WORLD_BANK_DATA_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/data/world-bank")
+_RUN_BACKHALF_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-backhalf")
+_RECOVERY_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/recover")
+_PORTFOLIO_PREPARE_V69_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/portfolio-v69/prepare"
+)
+_PORTFOLIO_DATA_V69_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/portfolio-v69/data"
+)
+_PORTFOLIO_RUN_V69_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/portfolio-v69/run"
+)
+_PORTFOLIO_RECONCILE_V69_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/portfolio-v69/reconcile"
 )
 
 
@@ -211,10 +227,69 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 self._consume_empty_action_body()
                 self._send(202, self.server.service.start_s0(match.group(1)))
                 return
+            match = _PREPARE_PREDATA_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    201,
+                    self.server.service.prepare_predata_v67(
+                        match.group(1),
+                        payload,
+                    ),
+                )
+                return
+            match = _RECONCILE_PREDATA_ROUTE.fullmatch(path)
+            if match:
+                self._consume_empty_action_body()
+                self._send(
+                    200,
+                    self.server.service.reconcile_predata_v67(match.group(1)),
+                )
+                return
             match = _RUN_S1_ROUTE.fullmatch(path)
             if match:
                 self._consume_empty_action_body()
                 self._send(202, self.server.service.start_s1(match.group(1)))
+                return
+            match = _PORTFOLIO_PREPARE_V69_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    201,
+                    self.server.service.prepare_portfolio_v69(
+                        match.group(1),
+                        payload,
+                    ),
+                )
+                return
+            match = _PORTFOLIO_DATA_V69_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    201,
+                    self.server.service.ingest_portfolio_series_v69(
+                        match.group(1),
+                        payload,
+                    ),
+                )
+                return
+            match = _PORTFOLIO_RUN_V69_ROUTE.fullmatch(path)
+            if match:
+                self._consume_empty_action_body()
+                self._send(
+                    202,
+                    self.server.service.start_portfolio_v69(match.group(1)),
+                )
+                return
+            match = _PORTFOLIO_RECONCILE_V69_ROUTE.fullmatch(path)
+            if match:
+                self._consume_empty_action_body()
+                self._send(
+                    200,
+                    self.server.service.reconcile_portfolio_v69(
+                        match.group(1)
+                    ),
+                )
                 return
             match = _ODE_DATA_ROUTE.fullmatch(path)
             if match:
@@ -227,12 +302,31 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            match = _WORLD_BANK_DATA_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    201,
+                    self.server.service.ingest_world_bank_data(
+                        match.group(1),
+                        payload,
+                    ),
+                )
+                return
             match = _RUN_BACKHALF_ROUTE.fullmatch(path)
             if match:
                 self._consume_empty_action_body()
                 self._send(
                     202,
                     self.server.service.start_backhalf(match.group(1)),
+                )
+                return
+            match = _RECOVERY_ROUTE.fullmatch(path)
+            if match:
+                payload = self._body()
+                self._send(
+                    200,
+                    self.server.service.recover(match.group(1), payload),
                 )
                 return
             self._send(404, {"status": "error", "type": "not_found"})

@@ -12,6 +12,7 @@ from fma.studio.s1_runtime import (
     S1SelectionDraftV58,
     ValidationRuleDraftV58,
 )
+from fma.v6.executable_candidate import RegisteredFamilySearchIntentV62
 from fma.studio.backhalf_runtime import (
     DataMappingDraftV59,
     DecisionNarrativeDraftV59,
@@ -314,6 +315,9 @@ def test_v58_synthesizer_rules_fit_historical_artifact_envelope() -> None:
                 "selected_mathematical_form": (
                     CandidateMathematicalFormDraftV58.model_json_schema()
                 ),
+                "executable_candidate_intent": (
+                    RegisteredFamilySearchIntentV62.model_json_schema()
+                ),
                 **{
                     f"validation_rule_{check_id}": (
                         ValidationRuleDraftV58.model_json_schema()
@@ -355,7 +359,7 @@ def test_v58_synthesizer_rules_fit_historical_artifact_envelope() -> None:
     assert applicability["maxLength"] == 1200
     assert math_form["maxLength"] == 2600
     artifacts = schema["properties"]["proposed_artifacts"]
-    assert artifacts["minItems"] == artifacts["maxItems"] == 8
+    assert artifacts["minItems"] == artifacts["maxItems"] == 9
 
 
 @pytest.mark.parametrize(

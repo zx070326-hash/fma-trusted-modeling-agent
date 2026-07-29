@@ -25,6 +25,29 @@ flowchart LR
 
 Codex 只能提出模型草稿。Harness 独占以下权力：生成候选 ID、绑定冻结契约、封存 IR、编译、求解、验证、晋级和撤销证据。
 
+## V6 当前能力边界
+
+V6 在 V5 图工作区之上增加了能力路由、失败诊断、下游撤销、新 attempt
+lineage、rolling-origin confirmation、来源与变换绑定、decision-value 证据和
+claim-relative scientific-success report。当前可执行面仍刻意狭窄：
+
+- 正值标量自治 ODE；
+- adaptive positive scalar series；
+- 失败后可在冻结预算内执行 retry、patch、ODE→adaptive branch、
+  acquire-data、abstain 或 human 路由。
+
+V6.3 进一步冻结无私有值的 forecast coordinates，从当前 selected model
+生成预测，并以一次性 reservation 连接 custody、registry、aggregate
+evaluation、promotion 和纯读 replay。Graph-native coordinator candidate
+已经覆盖预测与预约的 single-writer、CAS 和崩溃恢复；它不持有外部角色私钥。
+
+这些是本地工程与协议能力，不是已经发生的真实外部科学资格。V6.3 的
+protocol terminal 不会在 coordinator 中授予 scientific qualification。
+V6.4 的本地 manifest、revocation 和 host-attestation 机制即使全部通过，也
+固定输出 `NOT_RUN`；只有仓库外、任务不可构造的 OS/KMS/HSM trust anchor 与
+真实独立节点才能提高该 claim ceiling。完整审计见
+[`V6_COMPLETE_MODELING_CLOSURE_AUDIT.md`](V6_COMPLETE_MODELING_CLOSURE_AUDIT.md)。
+
 ## V5.9 Studio：真实 S0–S6 窄域纵切
 
 本地 Studio Bridge 已接通可运行的 S0–S1 纵向切片。S1 不是单次
