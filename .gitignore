@@ -5,10 +5,33 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+.venv/
+*.egg-info/
+/build/
+/dist/
+
+# Local credentials and private signing material
+.env
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.p12
+*.pfx
+*.keystore
+*_private.pem
+*private_key*.pem
 
 # Local scratch and generated run output
 /.tmp-*
 /tmp/
+/.fma-op-v70/
+/tasks/
+/runs/
+/artifacts/
+/experiments/
+/research/
+/state/
 /bench_smoke/
 /demo_output/
 /codex_agent_output/
@@ -22,15 +45,3 @@ htmlcov/
 /fma_bench_v0_accepted/
 /fma_bench_v0_final/
 /fma_bench_v0_release_799aff/
-
-# Historical campaign artifacts remain local. Iteration 32 is the only
-# transport protocol included in the cross-host snapshot.
-/experiments/*
-!/experiments/iteration_32/
-!/experiments/iteration_32/**
-!/experiments/iteration_33/
-!/experiments/iteration_33/**
-
-# Keep runtime caches ignored inside explicitly included campaign trees.
-/experiments/iteration_33/**/__pycache__/
-/experiments/iteration_33/**/*.py[cod]

@@ -46,6 +46,34 @@ from fma.v5_8.epistemic import (
     TransferDraftV58,
     TransferHypothesisV58,
 )
+from fma.v6.executable_candidate import (
+    EXECUTABLE_CANDIDATE_INTENT_PATH,
+    EXECUTABLE_CANDIDATE_IR_PATH,
+    RegisteredFamilySearchIntentV62,
+    compile_registered_family_search_ir_v62,
+)
+from fma.v6.measurement_study_design import (
+    MEASUREMENT_STUDY_DESIGN_PATH_V67,
+    MeasurementStudyDesignContractV67,
+)
+from fma.v6.predata_protocol import (
+    CANDIDATE_EXECUTION_BINDING_PATH_V67,
+    PREDATA_EXECUTION_PROTOCOL_PATH_V67,
+    CandidateExecutionBindingV67,
+    PreDataExecutionProtocolV67,
+    bind_candidate_to_predata_protocol_v67,
+    registered_positive_series_capability_pack_v67,
+    verify_predata_execution_protocol_v67,
+)
+from fma.v6.public_source import (
+    SOURCE_CONTRACT_PATH,
+    WorldBankSourceContractV62,
+)
+from fma.v6.s1_review_recovery import (
+    S1BoundedRepairContextV67,
+    S1FormalizationRejectionHandoffV67,
+    build_s1_formalization_rejection_handoff_v67,
+)
 
 
 EventCallback = Callable[
@@ -75,6 +103,89 @@ VALIDATION_RULE_ARTIFACTS = {
 
 class S1RuntimeError(RuntimeError):
     pass
+
+
+class S1FormalizationRejectedV67(S1RuntimeError):
+    """Typed V6.7 handoff from independent S1 rejection to graph recovery."""
+
+    recovery_category: Literal["review_rejection"] = "review_rejection"
+    recovery_failure_code: Literal["s1_formalization_review_rejected"] = (
+        "s1_formalization_review_rejected"
+    )
+
+    def __init__(
+        self,
+        *,
+        findings: list[str],
+        reviewer_receipt_hash: str,
+        protocol_hash: str,
+        handoff_artifact_hash: str | None = None,
+    ) -> None:
+        normalized = self.normalize_findings(findings)
+        if handoff_artifact_hash is not None and (
+            len(handoff_artifact_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in handoff_artifact_hash
+            )
+        ):
+            raise ValueError("S1 rejection handoff artifact hash is invalid")
+        self._findings = tuple(findings)
+        self._normalized_findings = normalized
+        self._reviewer_receipt_hash = reviewer_receipt_hash
+        self._protocol_hash = protocol_hash
+        self._handoff_artifact_hash = handoff_artifact_hash
+        self._normalized_finding_signature = self.finding_signature(normalized)
+        super().__init__(
+            "V6.7 S1 formalization was rejected after bounded repair "
+            f"(finding_signature={self._normalized_finding_signature})"
+        )
+
+    @staticmethod
+    def normalize_findings(findings: list[str]) -> tuple[str, ...]:
+        normalized = {
+            " ".join(item.split()).casefold()
+            for item in findings
+            if item.strip()
+        }
+        if not normalized:
+            normalized = {"reviewer rejected without a normalized finding"}
+        return tuple(sorted(normalized))
+
+    @staticmethod
+    def finding_signature(normalized_findings: tuple[str, ...]) -> str:
+        return sha256_value(
+            {
+                "schema_version": "6.7-s1-formalization-rejection",
+                "stage": "S1",
+                "recovery_category": "review_rejection",
+                "normalized_findings": list(normalized_findings),
+            }
+        )
+
+    @property
+    def findings(self) -> tuple[str, ...]:
+        return self._findings
+
+    @property
+    def normalized_findings(self) -> tuple[str, ...]:
+        return self._normalized_findings
+
+    @property
+    def normalized_finding_signature(self) -> str:
+        return self._normalized_finding_signature
+
+    @property
+    def reviewer_receipt_hash(self) -> str:
+        return self._reviewer_receipt_hash
+
+    @property
+    def protocol_hash(self) -> str:
+        return self._protocol_hash
+
+    @property
+    def handoff_artifact_hash(self) -> str | None:
+        return self._handoff_artifact_hash
 
 
 class LiteratureMapDraftV58(StrictModel):
@@ -215,6 +326,9 @@ class StudioS1OrchestratorV58:
         driver_factory: DriverFactory,
         event_callback: EventCallback,
         budget: S1ExplorationBudgetV58 | None = None,
+        measurement_contract_v67: MeasurementStudyDesignContractV67 | None = None,
+        predata_protocol_v67: PreDataExecutionProtocolV67 | None = None,
+        repair_context_v67: S1BoundedRepairContextV67 | None = None,
     ) -> None:
         self.workspace = workspace
         self.task_id = task_id
@@ -225,6 +339,262 @@ class StudioS1OrchestratorV58:
         self.s0_gate = workspace.current_gate("S0")
         if self.s0_gate is None:
             raise S1RuntimeError("S1 requires an open current S0 gate")
+        if (measurement_contract_v67 is None) != (predata_protocol_v67 is None):
+            raise S1RuntimeError(
+                "V6.7 S1 requires both the measurement contract and pre-data "
+                "execution protocol"
+            )
+        self.measurement_contract_v67 = measurement_contract_v67
+        self.predata_protocol_v67 = predata_protocol_v67
+        self.repair_context_v67 = repair_context_v67
+        self.source_contract_v62: WorldBankSourceContractV62 | None = None
+        self._v67_protocol_verification: dict[str, Any] | None = None
+        if self.measurement_contract_v67 is not None:
+            self._assert_v67_predata_integrity()
+        elif self.repair_context_v67 is not None:
+            raise S1RuntimeError(
+                "V6.7 S1 repair context requires the sealed pre-data pair"
+            )
+
+    @property
+    def v67_predata_enabled(self) -> bool:
+        return self.measurement_contract_v67 is not None
+
+    def _assert_v67_predata_integrity(self) -> None:
+        contract = self.measurement_contract_v67
+        protocol = self.predata_protocol_v67
+        if contract is None or protocol is None:
+            raise S1RuntimeError(
+                "V6.7 S1 pre-data artifacts are incomplete"
+            )
+        try:
+            contract.assert_sealed()
+            protocol.assert_sealed()
+        except (TypeError, ValueError) as exc:
+            raise S1RuntimeError(
+                "V6.7 S1 requires sealed pre-data artifacts"
+            ) from exc
+
+        workspace_hash = self.workspace.spec.spec_hash
+        if workspace_hash is None:
+            raise S1RuntimeError("V6.7 S1 requires a sealed workspace spec")
+        if (
+            contract.workspace_spec_hash != workspace_hash
+            or protocol.workspace_spec_hash != workspace_hash
+        ):
+            raise S1RuntimeError(
+                "V6.7 pre-data artifacts reference another workspace spec"
+            )
+        if (
+            contract.s0_gate_hash != self.s0_gate
+            or protocol.s0_gate_hash != self.s0_gate
+        ):
+            raise S1RuntimeError(
+                "V6.7 pre-data artifacts reference a stale or foreign S0 gate"
+            )
+        if (
+            contract.contract_hash is None
+            or protocol.measurement_contract_id != contract.contract_id
+            or protocol.measurement_contract_hash != contract.contract_hash
+        ):
+            raise S1RuntimeError(
+                "V6.7 protocol is not bound to the supplied measurement contract"
+            )
+        if self.repair_context_v67 is not None:
+            try:
+                self.repair_context_v67.assert_sealed()
+            except (TypeError, ValueError) as exc:
+                raise S1RuntimeError(
+                    "V6.7 S1 repair context is not sealed"
+                ) from exc
+            if (
+                self.repair_context_v67.workspace_spec_hash != workspace_hash
+                or self.repair_context_v67.s0_gate_hash != self.s0_gate
+                or self.repair_context_v67.predata_protocol_hash
+                != protocol.protocol_hash
+                or self.repair_context_v67.successor_attempt
+                != self.workspace._latest_attempt("S1")
+            ):
+                raise S1RuntimeError(
+                    "V6.7 S1 repair context is stale or belongs to another "
+                    "workspace, protocol, or graph attempt"
+                )
+
+        try:
+            capability_pack = registered_positive_series_capability_pack_v67(
+                protocol.adapter_binding.adapter_id
+            )
+        except (TypeError, ValueError) as exc:
+            raise S1RuntimeError(
+                "V6.7 protocol references an unavailable capability pack"
+            ) from exc
+        if not verify_predata_execution_protocol_v67(
+            measurement_contract=contract,
+            capability_pack=capability_pack,
+            protocol=protocol,
+        ):
+            raise S1RuntimeError(
+                "V6.7 protocol failed deterministic compiler replay"
+            )
+
+        source_path = self.workspace.root / SOURCE_CONTRACT_PATH
+        if not source_path.is_file():
+            raise S1RuntimeError(
+                f"V6.7 S1 artifact is absent: {SOURCE_CONTRACT_PATH}"
+            )
+        try:
+            source_contract = WorldBankSourceContractV62.model_validate(
+                json.loads(source_path.read_text(encoding="utf-8"))
+            )
+            source_contract.assert_sealed()
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise S1RuntimeError(
+                f"V6.7 S1 artifact cannot be replayed: {SOURCE_CONTRACT_PATH}"
+            ) from exc
+        if (
+            source_contract.contract_id != contract.source_contract_id
+            or source_contract.contract_hash != contract.source_contract_hash
+            or protocol.source_contract_id != source_contract.contract_id
+            or protocol.source_contract_hash != source_contract.contract_hash
+        ):
+            raise S1RuntimeError(
+                "V6.7 source, measurement, and execution contracts differ"
+            )
+        self.source_contract_v62 = source_contract
+
+        artifact_models = (
+            (
+                MEASUREMENT_STUDY_DESIGN_PATH_V67,
+                MeasurementStudyDesignContractV67,
+                contract,
+            ),
+            (
+                PREDATA_EXECUTION_PROTOCOL_PATH_V67,
+                PreDataExecutionProtocolV67,
+                protocol,
+            ),
+        )
+        for relative_path, model_type, expected in artifact_models:
+            path = self.workspace.root / relative_path
+            if not path.is_file():
+                raise S1RuntimeError(
+                    f"V6.7 S1 artifact is absent: {relative_path}"
+                )
+            try:
+                persisted = model_type.model_validate(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise S1RuntimeError(
+                    f"V6.7 S1 artifact cannot be replayed: {relative_path}"
+                ) from exc
+            if persisted != expected:
+                raise S1RuntimeError(
+                    f"V6.7 supplied and persisted artifacts differ: {relative_path}"
+                )
+
+        self._v67_protocol_verification = {
+            "schema_version": "6.7-s1-predata-protocol-verification",
+            "verification_method": (
+                "deterministic_recompile_from_sealed_measurement_contract_"
+                "and_code_registered_capability_pack"
+            ),
+            "replay_verified": True,
+            "workspace_spec_hash": workspace_hash,
+            "s0_gate_hash": self.s0_gate,
+            "measurement_contract_hash": contract.contract_hash,
+            "protocol_hash": protocol.protocol_hash,
+            "source_contract_hash": source_contract.contract_hash,
+            "capability_pack_hash": protocol.adapter_binding.capability_pack_hash,
+            "selected_adapter_id": protocol.adapter_binding.adapter_id,
+            "selected_adapter_version": protocol.adapter_binding.adapter_version,
+            "required_sections_verified": [
+                "adapter_binding",
+                "adapter_resolution",
+                "compatibility",
+                "thresholds",
+                "fitting",
+                "training_and_confirmation",
+                "uncertainty_and_stress",
+                "level_rules",
+                "abstention",
+            ],
+            "ordered_level_rules_verified": [
+                item.level for item in protocol.level_rules
+            ],
+            "observation_values_accessed": False,
+            "scientific_qualification_granted": False,
+            "real_world_action_authorized": False,
+        }
+
+    def _commit_s1_rejection_handoff_v67(
+        self,
+        *,
+        findings: list[str],
+        reviewer_receipt_hash: str,
+    ) -> str:
+        protocol = self.predata_protocol_v67
+        workspace_hash = self.workspace.spec.spec_hash
+        if (
+            protocol is None
+            or protocol.protocol_hash is None
+            or workspace_hash is None
+            or self.s0_gate is None
+        ):
+            raise S1RuntimeError(
+                "V6.7 S1 rejection handoff requires current pre-data authority"
+            )
+        existing_context_hash = (
+            str(self.repair_context_v67.context_hash)
+            if self.repair_context_v67 is not None
+            and self.repair_context_v67.context_hash is not None
+            else None
+        )
+        handoff = build_s1_formalization_rejection_handoff_v67(
+            workspace_spec_hash=workspace_hash,
+            s0_gate_hash=self.s0_gate,
+            predata_protocol_hash=protocol.protocol_hash,
+            reviewer_receipt_hash=reviewer_receipt_hash,
+            findings=findings,
+            predecessor_attempt=self.workspace._latest_attempt("S1"),
+            existing_repair_context_hash=existing_context_hash,
+        )
+        matches: list[str] = []
+        for reference, payload in self.workspace._artifacts_of_kind(
+            "s1_formalization_rejection_handoff_v67"
+        ):
+            try:
+                existing = (
+                    S1FormalizationRejectionHandoffV67.model_validate(payload)
+                )
+                existing.assert_sealed()
+            except (TypeError, ValueError) as exc:
+                raise S1RuntimeError(
+                    "committed V6.7 S1 rejection handoff is invalid"
+                ) from exc
+            if (
+                existing.workspace_spec_hash == workspace_hash
+                and existing.s0_gate_hash == self.s0_gate
+                and existing.predata_protocol_hash == protocol.protocol_hash
+                and existing.predecessor_attempt
+                == handoff.predecessor_attempt
+            ):
+                if existing.handoff_hash != handoff.handoff_hash:
+                    raise S1RuntimeError(
+                        "another S1 rejection handoff owns this graph attempt"
+                    )
+                matches.append(reference.sha256)
+        if len(matches) > 1:
+            raise S1RuntimeError(
+                "multiple S1 rejection handoffs own this graph attempt"
+            )
+        if matches:
+            return matches[0]
+        reference = self.workspace.commit_evidence(
+            "s1_formalization_rejection_handoff_v67",
+            handoff.model_dump(mode="json"),
+        )
+        return reference.sha256
 
     def _event(
         self,
@@ -258,7 +628,7 @@ class StudioS1OrchestratorV58:
         )
 
     def _s0_public_context(self) -> dict[str, Any]:
-        return {
+        context = {
             "objective": self.workspace.spec.objective,
             "mission_hash": self.workspace.spec.mission_hash,
             "evidence_snapshot_hash": self.workspace.spec.evidence_snapshot_hash,
@@ -303,6 +673,51 @@ class StudioS1OrchestratorV58:
                 }
             ],
         }
+        if self.v67_predata_enabled:
+            self._assert_v67_predata_integrity()
+            assert self.measurement_contract_v67 is not None
+            assert self.predata_protocol_v67 is not None
+            assert self.source_contract_v62 is not None
+            assert self._v67_protocol_verification is not None
+            protocol = self.predata_protocol_v67
+            context.update(
+                {
+                    "measurement_study_design_contract_v67": (
+                        self.measurement_contract_v67.model_dump(mode="json")
+                    ),
+                    "source_contract_v62": self.source_contract_v62.model_dump(
+                        mode="json"
+                    ),
+                    "predata_execution_protocol_v67": protocol.model_dump(
+                        mode="json"
+                    ),
+                    "predata_protocol_mechanical_verification_v67": (
+                        self._v67_protocol_verification
+                    ),
+                    "available_execution_adapters": [
+                        {
+                            "adapter_id": protocol.adapter_binding.adapter_id,
+                            "adapter_version": (
+                                protocol.adapter_binding.adapter_version
+                            ),
+                            "capability_pack_hash": (
+                                protocol.adapter_binding.capability_pack_hash
+                            ),
+                            "registered_families": [
+                                item
+                                for item in protocol.adapter_binding.allowed_families
+                            ],
+                            "authority_note": (
+                                "This exact adapter was frozen by the code-owned "
+                                "pre-data compiler. S1 may test candidate "
+                                "compatibility but may not replace, broaden, or "
+                                "reinterpret the protocol."
+                            ),
+                        }
+                    ],
+                }
+            )
+        return context
 
     def _parse_branch(
         self, branch_id: str, outcome: RoleProcessOutcomeV51
@@ -704,8 +1119,55 @@ class StudioS1OrchestratorV58:
         ValidationRulesDraftV58,
         CandidateStructureDraftV58,
         CandidateMathematicalFormDraftV58,
+        RegisteredFamilySearchIntentV62,
     ]:
         candidate_ids = sorted(item.candidate.candidate_id for item in branches)
+        if self.v67_predata_enabled:
+            refinement_rule = (
+                "Return complete selected_candidate_structure and "
+                "selected_mathematical_form artifacts plus one typed "
+                "executable_candidate_intent with the same candidate_id as "
+                "selection. The sealed V6.7 pre-data protocol already fixes "
+                "the exact adapter, registered families, feature and fitting "
+                "semantics, optimizer, split, baselines, dependence limits, "
+                "uncertainty, stress tests, and L0-L4 implementations. Do not "
+                "replace, broaden, or silently reinterpret those code-owned "
+                "rules. Refine the candidate mathematics and its assumptions "
+                "so they are compatible with the exact protocol, or preserve "
+                "an explicit incompatibility as a finding."
+            )
+            validation_rule_requirements = [
+                "Return one candidate-specific applicability rule for each "
+                "check_id in the supplied order.",
+                "Treat the sealed V6.7 protocol as authoritative for executable "
+                "thresholds, fitting, baselines, dependence, uncertainty, "
+                "stress, and L0-L4 implementation details; do not restate or "
+                "weaken them.",
+                "State how each exact registered check applies to this "
+                "candidate, including any contradiction or evidence condition, "
+                "and keep the outcome decidable as PASS, FAIL, NOT_RUN, or HUMAN.",
+                "L0-L2 cannot claim empirical performance; L3-L4 cannot claim "
+                "results before the frozen data and confirmation evidence exist.",
+            ]
+        else:
+            refinement_rule = (
+                "Return complete selected_candidate_structure and "
+                "selected_mathematical_form artifacts plus one typed "
+                "executable_candidate_intent with the same candidate_id as "
+                "selection. Resolve feature construction, estimation, "
+                "dependence, and decision details enough for an independent S1 "
+                "structural audit. The harness preserves the selected blind "
+                "branch's assumption and symbol registries."
+            )
+            validation_rule_requirements = [
+                "Return one rule for each check_id in the supplied order.",
+                "Make rules task-specific, quantitative where meaningful, "
+                "dependence-aware, and decidable as PASS, FAIL, NOT_RUN, or HUMAN.",
+                "Do not reference an undefined prespecified criterion, stress "
+                "distribution, feature set, or uncertainty procedure.",
+                "L0-L2 cannot claim empirical performance; L3-L4 must compare "
+                "against the best frozen baseline and stress decision stability.",
+            ]
         public_inputs = {
             **self._s0_public_context(),
             "candidates": [
@@ -717,23 +1179,8 @@ class StudioS1OrchestratorV58:
                 "identifiability, and baseline competitiveness; this is "
                 "development selection, not scientific acceptance."
             ),
-            "refinement_rule": (
-                "Return complete selected_candidate_structure and "
-                "selected_mathematical_form artifacts with the same candidate_id "
-                "as selection. Resolve feature construction, estimation, "
-                "dependence, and decision details enough for an independent S1 "
-                "structural audit. The harness preserves the selected blind "
-                "branch's assumption and symbol registries."
-            ),
-            "validation_rule_requirements": [
-                "Return one rule for each check_id in the supplied order.",
-                "Make rules task-specific, quantitative where meaningful, "
-                "dependence-aware, and decidable as PASS, FAIL, NOT_RUN, or HUMAN.",
-                "Do not reference an undefined prespecified criterion, stress "
-                "distribution, feature set, or uncertainty procedure.",
-                "L0-L2 cannot claim empirical performance; L3-L4 must compare "
-                "against the best frozen baseline and stress decision stability.",
-            ],
+            "refinement_rule": refinement_rule,
+            "validation_rule_requirements": validation_rule_requirements,
             "required_artifacts": {
                 "selection": S1SelectionDraftV58.model_json_schema(),
                 "selected_candidate_structure": (
@@ -742,12 +1189,25 @@ class StudioS1OrchestratorV58:
                 "selected_mathematical_form": (
                     CandidateMathematicalFormDraftV58.model_json_schema()
                 ),
+                "executable_candidate_intent": (
+                    RegisteredFamilySearchIntentV62.model_json_schema()
+                ),
                 **{
                     artifact_type: ValidationRuleDraftV58.model_json_schema()
                     for artifact_type in VALIDATION_RULE_ARTIFACTS.values()
                 },
             },
         }
+        if self.repair_context_v67 is not None:
+            public_inputs["s1_graph_repair_context_v67"] = (
+                self.repair_context_v67.model_dump(mode="json")
+            )
+            public_inputs["s1_graph_repair_rule_v67"] = (
+                "Use only the necessary normalized findings in the sealed "
+                "graph repair context. Repair candidate formalization against "
+                "the already-frozen protocol. Protocol, adapter, thresholds, "
+                "observation scope, and gate authority are immutable."
+            )
         if repair is not None:
             public_inputs["repair"] = repair
         outcome = self._run_role(
@@ -770,6 +1230,7 @@ class StudioS1OrchestratorV58:
             "selection",
             "selected_candidate_structure",
             "selected_mathematical_form",
+            "executable_candidate_intent",
             *VALIDATION_RULE_ARTIFACTS.values(),
         }
         if set(artifacts) != expected_artifacts:
@@ -804,11 +1265,18 @@ class StudioS1OrchestratorV58:
                 "selected_mathematical_form",
             )
         )
+        execution_intent = RegisteredFamilySearchIntentV62.model_validate(
+            _json_value(
+                artifacts["executable_candidate_intent"],
+                "executable_candidate_intent",
+            )
+        )
         if selection.selected_candidate_id not in candidate_ids:
             raise S1RuntimeError("synthesizer selected an unknown candidate")
         if {
             selected_structure.candidate_id,
             selected_math.candidate_id,
+            execution_intent.candidate_id,
         } != {selection.selected_candidate_id}:
             raise S1RuntimeError(
                 "selected candidate artifacts and selection identify different "
@@ -822,6 +1290,7 @@ class StudioS1OrchestratorV58:
             validation_rules,
             selected_structure,
             selected_math,
+            execution_intent,
         )
 
     @staticmethod
@@ -858,6 +1327,7 @@ class StudioS1OrchestratorV58:
         validation_rules: ValidationRulesDraftV58,
         selected_structure: CandidateStructureDraftV58,
         selected_math: CandidateMathematicalFormDraftV58,
+        execution_intent: RegisteredFamilySearchIntentV62,
         epistemic_review_proof: dict[str, Any],
     ) -> RoleProcessOutcomeV51:
         refined = self._refined_candidate(
@@ -865,29 +1335,78 @@ class StudioS1OrchestratorV58:
             selected_structure,
             selected_math,
         )
+        candidate_binding_v67: CandidateExecutionBindingV67 | None = None
+        if self.v67_predata_enabled:
+            assert self.predata_protocol_v67 is not None
+            candidate_binding_v67 = bind_candidate_to_predata_protocol_v67(
+                candidate=refined,
+                execution_intent=execution_intent,
+                execution_ir=compile_registered_family_search_ir_v62(
+                    refined,
+                    execution_intent,
+                ),
+                protocol=self.predata_protocol_v67,
+            )
+            audit_objective = (
+                "Independently audit whether the selected S1 candidate and its "
+                "candidate-specific L0-L4 applicability rules are compatible "
+                "with, and do not contradict, the mechanically replay-verified "
+                "V6.7 pre-data protocol."
+            )
+            audit_rule = (
+                "The harness has already deterministically replayed the sealed "
+                "V6.7 protocol from the sealed measurement contract and exact "
+                "code-registered capability pack. Do not ask the model to "
+                "restate optimizer, split, baseline, dependence, uncertainty, "
+                "stress, threshold, or L0-L4 implementation details. APPROVE "
+                "only if the selected mathematics, assumptions, typed intent, "
+                "and candidate-specific applicability rules are compatible "
+                "with and do not loosen or contradict that exact protocol, and "
+                "the harness-owned candidate_execution_binding_v67 resolves "
+                "the legacy V6.2 two-adapter envelope to the single pre-data "
+                "adapter. The legacy envelope is not S2 resolution authority. "
+                "Genuine task-specific limits must remain explicit. Empirical "
+                "results are not required at S1; use HUMAN only for an "
+                "irreducible user or domain choice."
+            )
+        else:
+            audit_objective = (
+                "Audit the selected S1 candidate and L0-L4 rules for "
+                "structural completeness before artifact freezing."
+            )
+            audit_rule = (
+                "APPROVE only if executable feature construction, "
+                "estimation/dependence semantics, and every L0-L4 "
+                "decision rule are fully specified. Empirical results "
+                "are not required at S1; use HUMAN only for an "
+                "irreducible user or domain choice."
+            )
         for attempt in (1, 2):
             try:
                 outcome = self._run_role(
                     role_name="s1_formalization_auditor",
                     role_kind="reviewer",
                     subject_id="s1-selection-preflight",
-                    objective=(
-                        "Audit the selected S1 candidate and L0-L4 rules for "
-                        "structural completeness before artifact freezing."
-                    ),
+                    objective=audit_objective,
                     public_inputs={
                         **self._s0_public_context(),
                         "selected_candidate": refined.model_dump(mode="json"),
+                        "executable_candidate_intent": (
+                            execution_intent.model_dump(mode="json")
+                        ),
+                        **(
+                            {
+                                "candidate_execution_binding_v67": (
+                                    candidate_binding_v67.model_dump(mode="json")
+                                )
+                            }
+                            if candidate_binding_v67 is not None
+                            else {}
+                        ),
                         "selection": selection.model_dump(mode="json"),
                         "validation_rules": validation_rules.model_dump(mode="json"),
                         "epistemic_review_proof": epistemic_review_proof,
-                        "audit_rule": (
-                            "APPROVE only if executable feature construction, "
-                            "estimation/dependence semantics, and every L0-L4 "
-                            "decision rule are fully specified. Empirical results "
-                            "are not required at S1; use HUMAN only for an "
-                            "irreducible user or domain choice."
-                        ),
+                        "audit_rule": audit_rule,
                         "response_budget": {
                             "maximum_findings": 8,
                             "maximum_rationale_characters": 800,
@@ -937,12 +1456,33 @@ class StudioS1OrchestratorV58:
         *,
         attempt: int,
     ) -> None:
+        rejection_evidence: dict[str, Any] = {}
+        if self.v67_predata_enabled and outcome.draft.verdict != "APPROVE":
+            assert self.predata_protocol_v67 is not None
+            assert self.predata_protocol_v67.protocol_hash is not None
+            normalized = S1FormalizationRejectedV67.normalize_findings(
+                outcome.draft.findings
+            )
+            rejection_evidence = {
+                "predata_protocol_hash": (
+                    self.predata_protocol_v67.protocol_hash
+                ),
+                "normalized_findings": list(normalized),
+                "normalized_finding_signature": (
+                    S1FormalizationRejectedV67.finding_signature(normalized)
+                ),
+                "recovery_category": "review_rejection",
+                "rollback_root_selected_by_model": False,
+            }
         self.workspace.commit_evidence(
             "codex_advisory_review_v58",
             {
                 "stage": "S1",
                 "purpose": "pre_freeze_formalization_audit",
                 "attempt": attempt,
+                "graph_attempt": self.workspace._latest_attempt("S1"),
+                "workspace_spec_hash": self.workspace.spec.spec_hash,
+                "s0_gate_hash": self.s0_gate,
                 "request_hash": outcome.request.request_hash,
                 "run_id": outcome.request.run_id,
                 "context_id": outcome.request.context_id,
@@ -952,6 +1492,7 @@ class StudioS1OrchestratorV58:
                 "process_receipt": outcome.receipt.model_dump(mode="json"),
                 "gate_authority": False,
                 "scientific_support_established": False,
+                **rejection_evidence,
             },
         )
 
@@ -1053,6 +1594,7 @@ class StudioS1OrchestratorV58:
         validation_rules: ValidationRulesDraftV58,
         selected_structure: CandidateStructureDraftV58,
         selected_math: CandidateMathematicalFormDraftV58,
+        execution_intent: RegisteredFamilySearchIntentV62,
     ) -> ValidationPlanV50:
         refined_candidate = self._refined_candidate(
             branches,
@@ -1099,6 +1641,19 @@ class StudioS1OrchestratorV58:
             identifiability_risks=selection.identifiability_risks,
         )
         plan = self._validation_plan(validation_rules)
+        execution_ir = compile_registered_family_search_ir_v62(
+            selected,
+            execution_intent,
+        )
+        candidate_binding_v67: CandidateExecutionBindingV67 | None = None
+        if self.v67_predata_enabled:
+            assert self.predata_protocol_v67 is not None
+            candidate_binding_v67 = bind_candidate_to_predata_protocol_v67(
+                candidate=selected,
+                execution_intent=execution_intent,
+                execution_ir=execution_ir,
+                protocol=self.predata_protocol_v67,
+            )
         root = self.workspace.root
         _write_json_new(
             root / "docs" / "candidates.json",
@@ -1126,6 +1681,19 @@ class StudioS1OrchestratorV58:
             root / "docs" / "validation_plan.json",
             plan.model_dump(mode="json"),
         )
+        _write_json_new(
+            root / EXECUTABLE_CANDIDATE_INTENT_PATH,
+            execution_intent.model_dump(mode="json"),
+        )
+        _write_json_new(
+            root / EXECUTABLE_CANDIDATE_IR_PATH,
+            execution_ir.model_dump(mode="json"),
+        )
+        if candidate_binding_v67 is not None:
+            _write_json_new(
+                root / CANDIDATE_EXECUTION_BINDING_PATH_V67,
+                candidate_binding_v67.model_dump(mode="json"),
+            )
         return plan
 
     def _commit_review(
@@ -1195,6 +1763,8 @@ class StudioS1OrchestratorV58:
 
     def run(self) -> dict[str, Any]:
         root = self.workspace.root
+        if self.v67_predata_enabled:
+            self._assert_v67_predata_integrity()
         s1_paths = [
             root / "docs" / name
             for name in (
@@ -1203,7 +1773,23 @@ class StudioS1OrchestratorV58:
                 "symbols.json",
                 "model_spec.json",
                 "validation_plan.json",
+                Path(EXECUTABLE_CANDIDATE_INTENT_PATH).name,
+                Path(EXECUTABLE_CANDIDATE_IR_PATH).name,
             )
+        ]
+        v67_manifest_paths = (
+            [
+                SOURCE_CONTRACT_PATH,
+                MEASUREMENT_STUDY_DESIGN_PATH_V67,
+                PREDATA_EXECUTION_PROTOCOL_PATH_V67,
+                CANDIDATE_EXECUTION_BINDING_PATH_V67,
+            ]
+            if self.v67_predata_enabled
+            else []
+        )
+        s1_review_paths = [
+            *s1_paths,
+            *(root / relative_path for relative_path in v67_manifest_paths),
         ]
         if self.workspace.current_gate("S1"):
             graph = EpistemicGraphStoreV58(root).load_head()
@@ -1212,7 +1798,12 @@ class StudioS1OrchestratorV58:
                 "epistemic_graph": graph,
                 "model_calls": 0,
             }
-        if any(path.exists() for path in s1_paths):
+        generated_v67_paths = (
+            [root / CANDIDATE_EXECUTION_BINDING_PATH_V67]
+            if self.v67_predata_enabled
+            else []
+        )
+        if any(path.exists() for path in [*s1_paths, *generated_v67_paths]):
             raise S1RuntimeError(
                 "S1 contains partial artifacts; refusing automatic re-execution"
             )
@@ -1480,6 +2071,7 @@ class StudioS1OrchestratorV58:
             validation_rules,
             selected_structure,
             selected_math,
+            execution_intent,
         ) = self._run_synthesizer(
             branches=branches,
             epistemic_summary={
@@ -1499,10 +2091,43 @@ class StudioS1OrchestratorV58:
             validation_rules=validation_rules,
             selected_structure=selected_structure,
             selected_math=selected_math,
+            execution_intent=execution_intent,
             epistemic_review_proof=epistemic_review_proof,
         )
         self._commit_advisory_review(advisory, attempt=1)
         if advisory.draft.verdict != "APPROVE":
+            if self.repair_context_v67 is not None:
+                self._event(
+                    "s1_graph_repair_review_exhausted_v67",
+                    "blocked",
+                    "The one graph-authorized S1 repair remained rejected",
+                    {
+                        "verdict": advisory.draft.verdict,
+                        "finding_count": len(advisory.draft.findings),
+                        "model_calls_used": self.call_budget.used,
+                        "graph_attempt": self.workspace._latest_attempt("S1"),
+                        "repair_context_hash": (
+                            self.repair_context_v67.context_hash
+                        ),
+                    },
+                )
+                assert self.predata_protocol_v67 is not None
+                assert self.predata_protocol_v67.protocol_hash is not None
+                assert advisory.receipt.receipt_hash is not None
+                handoff_artifact_hash = (
+                    self._commit_s1_rejection_handoff_v67(
+                        findings=advisory.draft.findings,
+                        reviewer_receipt_hash=(
+                            advisory.receipt.receipt_hash
+                        ),
+                    )
+                )
+                raise S1FormalizationRejectedV67(
+                    findings=advisory.draft.findings,
+                    reviewer_receipt_hash=advisory.receipt.receipt_hash,
+                    protocol_hash=self.predata_protocol_v67.protocol_hash,
+                    handoff_artifact_hash=handoff_artifact_hash,
+                )
             self._event(
                 "s1_preflight_review_requested_repair",
                 "blocked",
@@ -1526,6 +2151,9 @@ class StudioS1OrchestratorV58:
                     "selected_mathematical_form_hash": sha256_value(
                         selected_math
                     ),
+                    "executable_candidate_intent_hash": (
+                        execution_intent.content_hash()
+                    ),
                     "repair_requested": True,
                     "scientific_acceptance": False,
                 },
@@ -1536,6 +2164,7 @@ class StudioS1OrchestratorV58:
                 validation_rules,
                 selected_structure,
                 selected_math,
+                execution_intent,
             ) = self._run_synthesizer(
                 branches=branches,
                 epistemic_summary={
@@ -1553,6 +2182,9 @@ class StudioS1OrchestratorV58:
                     "previous_selected_mathematical_form": (
                         selected_math.model_dump(mode="json")
                     ),
+                    "previous_executable_candidate_intent": (
+                        execution_intent.model_dump(mode="json")
+                    ),
                     "auditor_verdict": advisory.draft.verdict,
                     "auditor_findings": advisory.draft.findings,
                     "auditor_uncertainties": advisory.draft.uncertainties,
@@ -1568,6 +2200,7 @@ class StudioS1OrchestratorV58:
                 validation_rules=validation_rules,
                 selected_structure=selected_structure,
                 selected_math=selected_math,
+                execution_intent=execution_intent,
                 epistemic_review_proof=epistemic_review_proof,
             )
             self._commit_advisory_review(advisory, attempt=2)
@@ -1582,6 +2215,24 @@ class StudioS1OrchestratorV58:
                         "model_calls_used": self.call_budget.used,
                     },
                 )
+                if self.v67_predata_enabled:
+                    assert self.predata_protocol_v67 is not None
+                    assert self.predata_protocol_v67.protocol_hash is not None
+                    assert advisory.receipt.receipt_hash is not None
+                    handoff_artifact_hash = (
+                        self._commit_s1_rejection_handoff_v67(
+                            findings=advisory.draft.findings,
+                            reviewer_receipt_hash=(
+                                advisory.receipt.receipt_hash
+                            ),
+                        )
+                    )
+                    raise S1FormalizationRejectedV67(
+                        findings=advisory.draft.findings,
+                        reviewer_receipt_hash=advisory.receipt.receipt_hash,
+                        protocol_hash=self.predata_protocol_v67.protocol_hash,
+                        handoff_artifact_hash=handoff_artifact_hash,
+                    )
                 raise S1RuntimeError(
                     "S1 formalization failed the second pre-freeze audit"
                 )
@@ -1622,6 +2273,9 @@ class StudioS1OrchestratorV58:
                 "validation_rules_hash": sha256_value(validation_rules),
                 "selected_structure_hash": sha256_value(selected_structure),
                 "selected_mathematical_form_hash": sha256_value(selected_math),
+                "executable_candidate_intent_hash": (
+                    execution_intent.content_hash()
+                ),
                 "scientific_acceptance": False,
             },
         )
@@ -1640,8 +2294,17 @@ class StudioS1OrchestratorV58:
             validation_rules=validation_rules,
             selected_structure=selected_structure,
             selected_math=selected_math,
+            execution_intent=execution_intent,
         )
-        self.workspace.submit_stage("S1", actor="model")
+        self.workspace.submit_stage(
+            "S1",
+            actor="model",
+            extra_paths=[
+                EXECUTABLE_CANDIDATE_INTENT_PATH,
+                EXECUTABLE_CANDIDATE_IR_PATH,
+                *v67_manifest_paths,
+            ],
+        )
         check = self.workspace.run_mechanical_check("S1")
         self._event(
             "s1_formalization_completed",
@@ -1658,7 +2321,7 @@ class StudioS1OrchestratorV58:
         manifest = self.workspace._manifest_for_stage("S1")
         review_artifacts = {
             path.stem: json.loads(path.read_text(encoding="utf-8"))
-            for path in s1_paths
+            for path in s1_review_paths
         }
         candidates_for_review = review_artifacts["candidates"]["candidates"]
         review_evidence_packet = {
@@ -1701,7 +2364,64 @@ class StudioS1OrchestratorV58:
             ],
             "selected_model": review_artifacts["model_spec"],
             "validation_plan": review_artifacts["validation_plan"],
+            "executable_candidate_intent": review_artifacts[
+                Path(EXECUTABLE_CANDIDATE_INTENT_PATH).stem
+            ],
+            "executable_candidate_ir": review_artifacts[
+                Path(EXECUTABLE_CANDIDATE_IR_PATH).stem
+            ],
         }
+        if self.v67_predata_enabled:
+            assert self._v67_protocol_verification is not None
+            review_evidence_packet.update(
+                {
+                    "source_contract_v62": review_artifacts[
+                        Path(SOURCE_CONTRACT_PATH).stem
+                    ],
+                    "measurement_study_design_contract_v67": review_artifacts[
+                        Path(MEASUREMENT_STUDY_DESIGN_PATH_V67).stem
+                    ],
+                    "predata_execution_protocol_v67": review_artifacts[
+                        Path(PREDATA_EXECUTION_PROTOCOL_PATH_V67).stem
+                    ],
+                    "candidate_execution_binding_v67": review_artifacts[
+                        Path(CANDIDATE_EXECUTION_BINDING_PATH_V67).stem
+                    ],
+                    "predata_protocol_mechanical_verification_v67": (
+                        self._v67_protocol_verification
+                    ),
+                }
+            )
+            final_review_rule = (
+                "APPROVE only if candidates are structurally distinct; the "
+                "origin-separation audit passes without cross-branch overlap; "
+                "disclosures exclude the recipient; transfers remain proposed "
+                "and assessments establish no scientific support; the selected "
+                "model is registry-bound; its typed execution intent and "
+                "candidate-specific validation applicability rules agree with "
+                "and do not loosen or contradict the exact sealed V6.7 "
+                "pre-data protocol; and the deterministic protocol replay is "
+                "verified. The harness-owned candidate execution binding, not "
+                "the legacy V6.2 two-adapter envelope, is the single-adapter "
+                "execution authority. The code-owned protocol, not model prose, owns "
+                "optimizer, split, baseline, dependence, uncertainty, stress, "
+                "threshold, and L0-L4 execution details. Origin separation is "
+                "the S1 workflow condition, not a claim of independent "
+                "scientific replication. Do not require empirical results at S1."
+            )
+        else:
+            final_review_rule = (
+                "APPROVE only if candidates are structurally distinct; the "
+                "origin-separation audit passes without cross-branch overlap; "
+                "disclosures exclude the recipient; transfers remain proposed "
+                "and assessments establish no scientific support; the selected "
+                "model is registry-bound; its typed execution intent agrees "
+                "with the candidate while free text remains non-executable; "
+                "and every L0-L4 rule is task-specific and decidable. Origin "
+                "separation is the S1 workflow condition, "
+                "not a claim of independent scientific replication. Do not "
+                "require empirical results at S1."
+            )
         review_inputs = {
             "producer_output_hash": synthesizer_outcome.receipt.output_hash,
             "manifest": manifest.model_dump(mode="json"),
@@ -1710,16 +2430,7 @@ class StudioS1OrchestratorV58:
             "epistemic_summary": graph_store.summary(),
             "epistemic_review_proof": epistemic_review_proof,
             "gate_policy_hash": POLICIES["S1"].policy_hash,
-            "review_rule": (
-                "APPROVE only if candidates are structurally distinct; the "
-                "origin-separation audit passes without cross-branch overlap; "
-                "disclosures exclude the recipient; transfers remain proposed "
-                "and assessments establish no scientific support; the selected "
-                "model is registry-bound; and every L0-L4 rule is task-specific "
-                "and decidable. Origin separation is the S1 workflow condition, "
-                "not a claim of independent scientific replication. Do not "
-                "require empirical results at S1."
-            ),
+            "review_rule": final_review_rule,
         }
 
         def review(role: Literal["referee", "red_team"]):
@@ -1838,6 +2549,7 @@ __all__ = [
     "CandidateStructureDraftV58",
     "LiteratureMapDraftV58",
     "REQUIRED_VALIDATION_IDS",
+    "S1FormalizationRejectedV67",
     "S1RuntimeError",
     "S1SelectionDraftV58",
     "StudioS1OrchestratorV58",

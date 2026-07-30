@@ -1,91 +1,100 @@
-# FMA 数学建模 Agent 迁移说明
+# FMA V7 迁移说明
 
-快照日期：2026-07-22（Asia/Shanghai）
+本文用于在新电脑重建公开源码版 FMA。默认分支包含运行所需源码、前端、
+核心协议文档和精简契约测试，不包含本机凭证、SQLite 账本、任务工作区、
+完整 campaign 输出或迭代研究日志。
 
-这个目录是 FMA trusted mathematical-modeling agent 的可重构工作区。它
-包含源码、测试、研究与架构文档、冻结协议、实验工件、事件链以及历史运行
-输出。打包过程排除了 Python/pytest 缓存、`.pyc` 字节码和 `tmp` 临时目录；
-没有包含虚拟环境、API key 或登录凭证。
-
-## 当前可信状态
-
-- V3.12 的受限开放集概念演化正式通过，但只属于合成 worldpack。
-- V3.13 的 evidence-to-concept compiler 正式状态为
-  `evidence_compiled_concepts_refuted_v313`。
-- V3.13 在 42 个性能案例中通过 20/21 个冻结门，失败门是
-  `paired_prediction_invariance`：`0.054603 > 0.05`。
-- V3.13 还存在全局准入事务缺陷：整体 refuted 时三个概念仍进入 active
-  experience view。因此该 store 已在
-  `experiments/iteration_21/STATUS.json` 标记为 `quarantined`，不得用于
-  active retrieval、model qualification 或现实决策。
-- 下一版本必须实现 staged adjudication + all-gates atomic commit，并使用
-  全新 confirmation seeds；不得在 V3.13 确认集上事后调参。
-
-## 新电脑环境
-
-要求 Python `>=3.11`，推荐使用 Python 3.12。Windows PowerShell 示例：
+## 1. 克隆
 
 ```powershell
-cd <解压后的 modeling 目录>
-py -3.12 -m venv .venv
+git clone https://github.com/zx070326-hash/fma-trusted-modeling-agent.git
+Set-Location fma-trusted-modeling-agent
+git status
+```
+
+要求：
+
+- Python 3.11 或更高版本；
+- 完整阶段角色需要可用的 Codex CLI；
+- Web 前端需要 Node.js 22.13 或更高版本；
+- authority key、API 凭证和登录状态必须在仓库外单独迁移或重建。
+
+## 2. Python 环境
+
+```powershell
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements-lock.txt
-python -m pip install -e .
+python -m pip install ".[test]"
 ```
 
-如果没有 `py` launcher，可将 `py -3.12` 换成对应的 `python` 命令。
-
-## 迁移后验证
-
-先运行约一分钟的 V3.13 定向检查：
+验证安装和公开契约：
 
 ```powershell
-python -m pytest tests\test_v3_evidence_concept_compiler.py tests\test_v3_evidence_compiled_growth.py -q -ra
+python -c "import fma; print(fma.__version__)"
+fma-ops --help
+fma-studio --help
+python -m pytest
 ```
 
-本快照预期为 `11 passed, 1 xfailed`。唯一 strict xfail 是已知的全局准入
-事务缺陷，不应删除或改成 pass 来美化结果。
-
-完整回归：
+## 3. 前端
 
 ```powershell
-python -m pytest -q -ra
+Set-Location frontend
+npm install
+npm test
+npm run dev
 ```
 
-本快照收集 239 项，预期 `238 passed, 1 xfailed`，参考墙钟约 28 分钟。
+前端通常运行在 `http://localhost:3001`。返回仓库根目录后再启动本地
+Studio Bridge。
 
-## 关键入口
+## 4. 本地 authority material
 
-- `README.md`：版本演化和证据边界总览；
-- `AI_Native数学建模Agent_整体架构_V2.md`：AI-native 总体架构；
-- `fma/`：可信内核和 V1/V2/V3 实现；
-- `tests/`：单元、治理与可重放回归；
-- `research/`：各轮研究、方法来源和冻结依据；
-- `experiments/`：开发/正式 worldpack、事件链和结果；
-- `experiments/iteration_21/RESULTS.md`：V3.13 正式结果；
-- `experiments/iteration_21/CONFIRMATION_PROTOCOL.md`：预确认冻结协议；
-- `experiments/iteration_21/STATUS.json`：必须优先读取的隔离控制状态；
-- `fma/v3/evidence_concept_compiler_v313.py`：证据到 typed concept 编译器；
-- `fma/v3/evidence_compiled_growth_v313.py`：V3.13 worldpack、执行、评估和重放。
+以下示例在用户目录生成 32 字节本地开发 key，而不是在仓库中生成：
 
-## 重构约束
+```powershell
+$authorityPath = Join-Path $env:USERPROFILE ".fma-authority.key"
+$authorityBytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($authorityBytes)
+$rng.Dispose()
+[IO.File]::WriteAllBytes($authorityPath, $authorityBytes)
 
-1. 保留原始实验目录与事件链，不修改历史正式工件。
-2. 不得把 `validated@synthetic_oracle` 或合成 worldpack 通过解释为现实有效性。
-3. V3.13 quarantined experience store 只能作为失败证据读取。
-4. 先修全局原子准入控制，再扩展联网学习、模型族或现实动作能力。
-5. 新实验使用新版本号、新 seeds、预注册门和独立 private evaluator。
-6. 任意来源网页、论文或模型输出都应视为不可信数据，不允许直接执行代码。
+$env:FMA_STUDIO_TOKEN = [guid]::NewGuid().ToString("N")
 
-## 打包边界
+fma-studio `
+  --task-root .\tasks `
+  --authority-key-file $authorityPath `
+  --host 127.0.0.1 `
+  --port 8765
+```
 
-归档包含整个工作区，排除以下机器生成内容：
+本地 key 只能建立本地工作流真实性，不能冒充外部 Custodian、Evaluator、
+Promotion Authority、KMS/HSM 或独立科学资格节点。
 
-- `.pytest_cache/`
-- 所有 `__pycache__/`
-- 所有 `*.pyc`
-- `tmp/`
+## 5. 迁移后检查
 
-归档的 SHA-256 由打包机器在交付时单独提供，复制到新电脑后应重新计算并
-比对，再开始解压和安装。
+```powershell
+fma-ops --task-root .\tasks doctor
+git status --short
+```
+
+正常运行产生的以下内容已经被 Git 忽略：
+
+- `.venv/`
+- `tasks/`
+- `.fma-op-v70/`
+- `runs/`、`artifacts/`
+- `experiments/`、`research/`、`state/`
+- `.env*`、私钥和本地签名材料
+
+不要把旧电脑上的任务数据库直接覆盖到正在运行的新实例。先停止进程，
+完整复制对应 task root 与其 `.fma-op-v70` 目录，再运行 `doctor`；任何
+manifest 或事件链不一致都应保持失败关闭。
+
+## 6. 历史证据边界
+
+公开默认分支为便于阅读的源码发布面。清理前的 V6–V7 campaign、receipts
+和研究过程材料保留在 Git tag `evidence-archive-v7.0`，不属于默认安装，
+也不应被解释为已经取得外部科学资格。

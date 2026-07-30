@@ -2,6 +2,64 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+export type EvidenceStatus = "PASS" | "FAIL" | "NOT_RUN" | "HUMAN";
+export type EvidenceScope = "development" | "public_data";
+export type WorkflowMode = "legacy" | "v67";
+export type PredataTransactionStatusV67 =
+  | "NOT_STARTED"
+  | "RECOVERY_PENDING"
+  | "STALE_PENDING"
+  | "COMPLETED"
+  | "LEGACY_COMPLETED";
+
+export type DecisionUseRequestV62 = {
+  schema_version: "6.2";
+  decision_id: string;
+  value_owner_ref: string;
+  action_unit: string;
+  underage_unit_cost: number;
+  overage_unit_cost: number;
+  minimum_relative_loss_improvement: number;
+  maximum_mean_normalized_regret: number;
+};
+
+export type CreateTaskOptions = {
+  evidence_scope: EvidenceScope;
+  workflow_mode: WorkflowMode;
+  decision_use?: DecisionUseRequestV62;
+};
+
+export type StudioWorldBankDataRequestV62 = {
+  schema_version: "6.2";
+  adapter_id:
+    | "scalar_autonomous_ode_v52"
+    | "adaptive_positive_series_v57";
+  contract_id: string;
+  country_code: string;
+  indicator_id: string;
+  start_year: number;
+  end_year: number;
+  minimum_observations: number;
+  state_unit: string;
+  attribution: string;
+  semantic_name: string;
+  operational_definition: string;
+  observation_time_basis: string;
+  aggregation_level: string;
+  fixture_only: boolean;
+};
+
+export type StudioPredataRequestSummaryV67 =
+  StudioWorldBankDataRequestV62 & {
+    source_contract_hash: string;
+    measurement_contract_hash: string;
+    protocol_hash: string;
+    preparation_evidence_hash: string | null;
+    intent_hash: string | null;
+    completion_hash: string | null;
+    capability_pack_hash: string;
+  };
+
 export type StudioEvent = {
   sequence: number;
   event_type: string;
@@ -16,6 +74,7 @@ export type TaskSnapshot = {
   status: "success";
   task_id: string;
   objective: string;
+  evidence_scope: EvidenceScope;
   workflow: {
     graph_verified: boolean;
     stage_statuses: Record<string, string>;
@@ -24,6 +83,47 @@ export type TaskSnapshot = {
     real_world_action_authorized: false;
   };
   activity: "idle" | "accepted" | "running" | "succeeded" | "failed" | "blocked";
+  operator_v70: {
+    schema_version: "7.0-operator-summary";
+    workspace_id: string;
+    counts: Record<string, number>;
+    live_lease: boolean;
+    latest_work: {
+      work_id: string;
+      action: string;
+      status:
+        | "PENDING"
+        | "LEASED"
+        | "RECOVERY_PENDING"
+        | "SUBMITTED"
+        | "ACCEPTED"
+        | "REJECTED"
+        | "FAILED"
+        | "BLOCKED";
+      attempt_epoch: number;
+      packet_hash: string;
+    } | null;
+    claim_scope: "workflow_control_only";
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  next_packet_v70: {
+    schema_version: "7.0-operator-packet";
+    workspace_id: string;
+    action: string;
+    purpose: string;
+    write_paths: string[];
+    allowed_tool_profile: string;
+    expected_outputs: string[];
+    max_attempts: number;
+    lease_seconds: number;
+    max_wall_seconds: number;
+    idempotency_key: string;
+    packet_hash: string;
+    claim_scope: "workflow_control_only";
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  } | null;
   events: StudioEvent[];
   epistemic: {
     schema_version: "5.8";
@@ -41,14 +141,183 @@ export type TaskSnapshot = {
     cross_task_use_permitted: boolean;
   } | null;
   backhalf: {
-    schema_version: "5.9";
-    adapter_id: "scalar_autonomous_ode_v52";
+    schema_version: "6.0";
+    adapter_id:
+      | "scalar_autonomous_ode_v52"
+      | "adaptive_positive_series_v57";
     data_received: boolean;
     workflow_complete: boolean;
     selected_scientific_family: string | null;
+    selected_branch: string | null;
+    recovery_triggered: boolean;
     level_statuses: Record<string, string>;
     scientific_acceptance: boolean;
     fixture_only: boolean | null;
+    source_integrity_status?: EvidenceStatus;
+    scientific_provenance_status?: EvidenceStatus;
+    source_stage_admission_status?: EvidenceStatus;
+    rolling_confirmation_admission_status?: EvidenceStatus;
+    rolling_confirmation_status?: EvidenceStatus;
+    decision_evidence_admission_status?: EvidenceStatus;
+    decision_evidence_status?: EvidenceStatus;
+    scientific_decision_status?: EvidenceStatus;
+    executable_candidate_admission_status?: EvidenceStatus;
+    executable_candidate_status?: EvidenceStatus;
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  recovery: {
+    schema_version: "6.0";
+    policy_hash: string;
+    scientific_attempts_started: number;
+    attempt_budget_remaining: number;
+    same_attempt_retries: number;
+    distinct_failure_signatures: number;
+    stopped: boolean;
+    stop_reason: string | null;
+    human_required: boolean;
+    human_reason: string | null;
+    last_action:
+      | "RETRY"
+      | "PATCH"
+      | "BRANCH"
+      | "ACQUIRE_DATA"
+      | "ABSTAIN"
+      | "HUMAN"
+      | null;
+    last_revoke_from: string | null;
+    event_count: number;
+    last_event_hash: string | null;
+    private_adaptive_feedback_permitted: false;
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  scientific_success: {
+    schema_version: "6.1";
+    evaluated: boolean;
+    claim_kind: "predictive";
+    local_predictive_gate_status: EvidenceStatus;
+    scientific_success_status: EvidenceStatus;
+    claim_ceiling:
+      | "no_scientific_claim"
+      | "workflow_integrity_only"
+      | "fixture_protocol_only"
+      | "local_retrospective_adapter_evidence"
+      | "local_leakage_safe_predictive_evidence"
+      | "externally_qualified_predictive_evidence";
+    fixture_only?: boolean;
+    dimensions: Record<
+      string,
+      {
+        status: EvidenceStatus;
+        required_for_claim: boolean;
+        reason_codes: string[];
+        metrics: Record<string, number | boolean | null>;
+      }
+    >;
+    confirmation: {
+      status: EvidenceStatus;
+      completed_fold_count: number;
+      requested_fold_count: number;
+      selected_model_ids: string[];
+      metrics: Record<string, number | null>;
+      reason_codes: string[];
+    } | null;
+    report_hash?: string;
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  scientific_closure?: {
+    schema_version?: string;
+    evaluated?: boolean;
+    source_integrity_status?: EvidenceStatus;
+    scientific_provenance_status?: EvidenceStatus;
+    decision_evidence_status?: EvidenceStatus;
+    scientific_decision_status?: EvidenceStatus;
+    stage_admission_status?: EvidenceStatus;
+    closure_verification_status?: EvidenceStatus;
+    local_evidence_status?: EvidenceStatus;
+    scientific_closure_status?: EvidenceStatus;
+    claim_ceiling?:
+      | "no_scientific_claim"
+      | "workflow_integrity_only"
+      | "fixture_protocol_only"
+      | "local_retrospective_adapter_evidence"
+      | "local_leakage_safe_predictive_evidence"
+      | "externally_qualified_predictive_evidence";
+    fixture_only?: boolean;
+    dimensions?:
+      | Record<
+          string,
+          {
+            status: EvidenceStatus;
+            required_for_claim: boolean;
+            reason_codes: string[];
+          }
+        >
+      | {
+          dimension_id: string;
+          status: EvidenceStatus;
+          required_for_claim: boolean;
+          reason_codes: string[];
+        }[];
+    scientific_qualification_granted?: false;
+    real_world_action_authorized?: false;
+  } | null;
+  predata_v67: {
+    schema_version: "6.7";
+    workflow_mode: WorkflowMode;
+    available: boolean;
+    prepared: boolean;
+    required_before_v67_s1: boolean;
+    transaction_status: PredataTransactionStatusV67;
+    recovery_available: boolean;
+    request_summary: StudioPredataRequestSummaryV67 | null;
+    source_contract_hash: string | null;
+    measurement_contract_hash: string | null;
+    protocol_hash: string | null;
+    intent_hash: string | null;
+    completion_hash: string | null;
+    observation_values_included: false;
+    private_acceptance_data_included: false;
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  portfolio_v69?: {
+    schema_version: "6.9";
+    development_only: true;
+    available: boolean;
+    transaction_status:
+      | "NOT_STARTED"
+      | "PREPARED"
+      | "DATA_READY"
+      | "RUN_PENDING"
+      | "COMPLETED"
+      | "STALE_PENDING";
+    recovery_available: boolean;
+    protocol_hash: string | null;
+    snapshot_hash: string | null;
+    outer_origin_plan_hash: string | null;
+    branch_statuses: Record<string, "PASS" | "FAIL" | "NOT_RUN">;
+    evaluation_hashes: Record<string, string>;
+    decision: "SELECT" | "ABSTAIN" | null;
+    selected_branch_id: string | null;
+    decision_hash: string | null;
+    run_hash: string | null;
+    baseline_guard_status: "PASS" | "FAIL" | "NOT_RUN";
+    persistence_relative_improvement: number | null;
+    engineering_status:
+      | "NOT_STARTED"
+      | "PREPARED"
+      | "DATA_READY"
+      | "RUN_PENDING"
+      | "COMPLETED"
+      | "STALE_PENDING";
+    scientific_evidence_status: "NOT_RUN";
+    claim_ceiling: "development_protocol_only";
+    problem_signature_source: "caller_selected_v69_narrow_lane";
+    derived_from_s0_typed_problem_signature: false;
+    s1_s6_gates_touched: false;
     scientific_qualification_granted: false;
     real_world_action_authorized: false;
   };
@@ -79,6 +348,73 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
+function assertCompleteDecisionUse(
+  decisionUse: DecisionUseRequestV62 | undefined,
+): void {
+  if (!decisionUse) return;
+  const requiredText = [
+    decisionUse.decision_id,
+    decisionUse.value_owner_ref,
+    decisionUse.action_unit,
+  ];
+  if (requiredText.some((value) => !value.trim())) {
+    throw new Error("决策用途已启用，但决策 ID、价值负责人和行动单位未填写完整。");
+  }
+  if (
+    !Number.isFinite(decisionUse.underage_unit_cost) ||
+    decisionUse.underage_unit_cost <= 0 ||
+    !Number.isFinite(decisionUse.overage_unit_cost) ||
+    decisionUse.overage_unit_cost <= 0
+  ) {
+    throw new Error("少配与多配单位代价必须是大于 0 的有限数值。");
+  }
+  if (
+    !Number.isFinite(decisionUse.minimum_relative_loss_improvement) ||
+    decisionUse.minimum_relative_loss_improvement < 0 ||
+    decisionUse.minimum_relative_loss_improvement > 1
+  ) {
+    throw new Error("最小相对损失改善阈值必须位于 0 到 1 之间。");
+  }
+  if (
+    !Number.isFinite(decisionUse.maximum_mean_normalized_regret) ||
+    decisionUse.maximum_mean_normalized_regret <= 0 ||
+    decisionUse.maximum_mean_normalized_regret > 1
+  ) {
+    throw new Error("最大平均归一化后悔阈值必须大于 0 且不超过 1。");
+  }
+}
+
+function preparedPredataRequestFromSnapshot(
+  snapshot: TaskSnapshot,
+): StudioWorldBankDataRequestV62 | null {
+  const summary = snapshot.predata_v67.request_summary;
+  if (
+    !summary ||
+    (snapshot.predata_v67.prepared !== true &&
+      snapshot.predata_v67.transaction_status !== "RECOVERY_PENDING" &&
+      snapshot.predata_v67.transaction_status !== "STALE_PENDING")
+  ) {
+    return null;
+  }
+  return {
+    schema_version: summary.schema_version,
+    adapter_id: summary.adapter_id,
+    contract_id: summary.contract_id,
+    country_code: summary.country_code,
+    indicator_id: summary.indicator_id,
+    start_year: summary.start_year,
+    end_year: summary.end_year,
+    minimum_observations: summary.minimum_observations,
+    state_unit: summary.state_unit,
+    attribution: summary.attribution,
+    semantic_name: summary.semantic_name,
+    operational_definition: summary.operational_definition,
+    observation_time_basis: summary.observation_time_basis,
+    aggregation_level: summary.aggregation_level,
+    fixture_only: summary.fixture_only,
+  };
+}
+
 export function useStudioBridge() {
   const [url, setUrl] = useState("http://127.0.0.1:8765");
   const [token, setToken] = useState("");
@@ -86,6 +422,10 @@ export function useStudioBridge() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [task, setTask] = useState<TaskSnapshot | null>(null);
+  const taskEvidenceScope = task?.evidence_scope ?? null;
+  const preparedPredataRequest = task
+    ? preparedPredataRequestFromSnapshot(task)
+    : null;
 
   const request = useCallback(
     async <T,>(
@@ -138,15 +478,26 @@ export function useStudioBridge() {
   }, [request]);
 
   const createTask = useCallback(
-    async (objective: string) => {
+    async (
+      objective: string,
+      options: CreateTaskOptions = {
+        evidence_scope: "development",
+        workflow_mode: "legacy",
+      },
+    ) => {
       setBusy(true);
       setError("");
       try {
+        assertCompleteDecisionUse(options.decision_use);
         const snapshot = await request<TaskSnapshot>("/api/v1/tasks", {
           method: "POST",
           body: JSON.stringify({
             objective,
-            evidence_scope: "development",
+            evidence_scope: options.evidence_scope,
+            workflow_mode: options.workflow_mode,
+            ...(options.decision_use
+              ? { decision_use: options.decision_use }
+              : {}),
           }),
         });
         setTask(snapshot);
@@ -174,6 +525,61 @@ export function useStudioBridge() {
       return snapshot;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "S0 启动失败");
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  }, [request, task]);
+
+  const preparePredata = useCallback(
+    async (payload: StudioWorldBankDataRequestV62) => {
+      if (!task) {
+        throw new Error(
+          "Create a task and complete S0 before preparing the V6.7 pre-data contracts.",
+        );
+      }
+      setBusy(true);
+      setError("");
+      try {
+        const snapshot = await request<TaskSnapshot>(
+          `/api/v1/tasks/${encodeURIComponent(task.task_id)}/prepare-predata`,
+          { method: "POST", body: JSON.stringify(payload) },
+        );
+        setTask(snapshot);
+        return snapshot;
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "V6.7 pre-data preparation failed",
+        );
+        throw reason;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [request, task],
+  );
+
+  const reconcilePredata = useCallback(async () => {
+    if (!task) {
+      throw new Error("Create a task before reconciling its V6.7 pre-data transaction.");
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const snapshot = await request<TaskSnapshot>(
+        `/api/v1/tasks/${encodeURIComponent(task.task_id)}/reconcile-predata`,
+        { method: "POST" },
+      );
+      setTask(snapshot);
+      return snapshot;
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "V6.7 pre-data reconciliation failed",
+      );
       throw reason;
     } finally {
       setBusy(false);
@@ -213,6 +619,34 @@ export function useStudioBridge() {
         return snapshot;
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "ODE 数据冻结失败");
+        throw reason;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [request, task],
+  );
+
+  const ingestWorldBankData = useCallback(
+    async (payload: StudioWorldBankDataRequestV62) => {
+      if (!task) {
+        throw new Error("请先完成 S0–S1，再登记 World Bank 官方数据源。");
+      }
+      setBusy(true);
+      setError("");
+      try {
+        const snapshot = await request<TaskSnapshot>(
+          `/api/v1/tasks/${encodeURIComponent(task.task_id)}/data/world-bank`,
+          { method: "POST", body: JSON.stringify(payload) },
+        );
+        setTask(snapshot);
+        return snapshot;
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "World Bank 官方数据源登记失败",
+        );
         throw reason;
       } finally {
         setBusy(false);
@@ -272,11 +706,16 @@ export function useStudioBridge() {
     busy,
     error,
     task,
+    taskEvidenceScope,
+    preparedPredataRequest,
     connect,
     createTask,
     runS0,
+    preparePredata,
+    reconcilePredata,
     runS1,
     ingestOdeData,
+    ingestWorldBankData,
     runBackhalf,
     refresh,
   };

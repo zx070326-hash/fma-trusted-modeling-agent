@@ -6,7 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "fma-trusted-kernel"
 version = "0.3.0"
 description = "A graph-native trustworthy kernel and staged workspace for mathematical modeling"
+readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
 dependencies = [
   "cryptography>=42",
   "numpy>=2.0",
@@ -16,6 +22,14 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+
+[project.scripts]
+fma-ops = "fma.operator_cli_v70:main"
+fma-studio = "fma.studio.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/zx070326-hash/fma-trusted-modeling-agent"
+Issues = "https://github.com/zx070326-hash/fma-trusted-modeling-agent/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

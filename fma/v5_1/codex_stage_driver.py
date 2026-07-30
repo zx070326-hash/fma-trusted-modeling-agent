@@ -328,7 +328,11 @@ class CodexStageRoleTransportV51:
                 role_name=request.role_name,
                 role_kind=request.role_kind,
                 transport="codex_cli",
-                provider="openai_codex_cli",
+                provider=getattr(
+                    self.process_runner,
+                    "provider",
+                    "openai_codex_cli",
+                ),
                 requested_model=explorer.config.requested_model,
                 cli_version=cli_version,
                 executable_sha256=executable_hash,
@@ -336,7 +340,19 @@ class CodexStageRoleTransportV51:
                 output_schema_hash=hashlib.sha256(
                     schema_text.encode("utf-8")
                 ).hexdigest(),
-                argv_hash=sha256_value(argv),
+                argv_hash=sha256_value(
+                    {
+                        "logical_argv": argv,
+                        "runtime_identity": getattr(
+                            self.process_runner,
+                            "runtime_identity",
+                            None,
+                        ),
+                    }
+                )
+                if getattr(self.process_runner, "runtime_identity", None)
+                is not None
+                else sha256_value(argv),
                 stdout_sha256=hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
                 stderr_sha256=hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
                 output_hash=sha256_value(draft),
