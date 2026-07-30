@@ -1,14 +1,5 @@
-# Iteration 33 manifests bind exact file bytes; never rewrite line endings.
-/experiments/iteration_33/** -text
-
-# Iteration 34 public evidence also binds exact JSON, PEM, and report bytes.
-/experiments/iteration_34/** -text
-
 # V5.6 freezes the exact threshold file bytes as well as semantic content.
 /V5_6_HYBRID_THRESHOLDS.json -text
 
 # V5.7 freezes the exact adaptive positive-series threshold bytes.
 /V5_7_ADAPTIVE_THRESHOLDS.json -text
-
-# Iteration 35 mechanism-suite evidence binds exact artifact bytes.
-/experiments/iteration_35/** -text
