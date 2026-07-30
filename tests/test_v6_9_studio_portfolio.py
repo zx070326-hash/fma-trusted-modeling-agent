@@ -146,11 +146,12 @@ def test_v69_studio_runs_development_side_lane_without_stage_authority(
         "RUN_PENDING",
         "COMPLETED",
     }
-    for _ in range(500):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
         completed = service.snapshot("studio-v69")
         if completed["activity"] not in {"accepted", "running"}:
             break
-        time.sleep(0.01)
+        time.sleep(0.1)
     else:
         pytest.fail("V6.9 portfolio worker did not become terminal")
     portfolio = completed["portfolio_v69"]

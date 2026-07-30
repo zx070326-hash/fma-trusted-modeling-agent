@@ -83,6 +83,47 @@ export type TaskSnapshot = {
     real_world_action_authorized: false;
   };
   activity: "idle" | "accepted" | "running" | "succeeded" | "failed" | "blocked";
+  operator_v70: {
+    schema_version: "7.0-operator-summary";
+    workspace_id: string;
+    counts: Record<string, number>;
+    live_lease: boolean;
+    latest_work: {
+      work_id: string;
+      action: string;
+      status:
+        | "PENDING"
+        | "LEASED"
+        | "RECOVERY_PENDING"
+        | "SUBMITTED"
+        | "ACCEPTED"
+        | "REJECTED"
+        | "FAILED"
+        | "BLOCKED";
+      attempt_epoch: number;
+      packet_hash: string;
+    } | null;
+    claim_scope: "workflow_control_only";
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  };
+  next_packet_v70: {
+    schema_version: "7.0-operator-packet";
+    workspace_id: string;
+    action: string;
+    purpose: string;
+    write_paths: string[];
+    allowed_tool_profile: string;
+    expected_outputs: string[];
+    max_attempts: number;
+    lease_seconds: number;
+    max_wall_seconds: number;
+    idempotency_key: string;
+    packet_hash: string;
+    claim_scope: "workflow_control_only";
+    scientific_qualification_granted: false;
+    real_world_action_authorized: false;
+  } | null;
   events: StudioEvent[];
   epistemic: {
     schema_version: "5.8";

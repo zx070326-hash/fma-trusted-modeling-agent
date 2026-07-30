@@ -48,6 +48,31 @@ V6.4 的本地 manifest、revocation 和 host-attestation 机制即使全部通�
 真实独立节点才能提高该 claim ceiling。完整审计见
 [`V6_COMPLETE_MODELING_CLOSURE_AUDIT.md`](V6_COMPLETE_MODELING_CLOSURE_AUDIT.md)。
 
+## V7.0 薄运营控制面
+
+V7.0 在 Studio 外围增加了独立的 Operator Plane：事务化附件 Intake、
+SQLite WAL 任务账本、语义幂等、lease/heartbeat/fencing、规范化写入范围、
+只读 Next Packet、显式 reconcile 和全量 doctor。运营数据库位于 task
+workspace 之外，不进入任何阶段 manifest，也不能打开 Gate。
+
+Operator task 的 `ACCEPTED` 只投影“当前认证工作区已经满足该动作的后置条件”；
+它不等于科学检查 `PASS`，更不授予 scientific qualification 或现实行动权限。
+当前 fencing 约束的是账本提交，不会终止同进程回调或撤回其文件副作用；
+工具、wall-time 和路径字段仍是声明/审计契约。只有与当前 Graph 及文件
+manifest 完全一致的 `SUBMITTED` 输出能够自动 reconcile；普通 expired lease
+进入 `RECOVERY_PENDING`，不会直接重试。
+完整边界和命令见 [`V7_OPERATOR_PLANE.md`](V7_OPERATOR_PLANE.md)。
+
+```powershell
+fma-ops --task-root .\tasks intake `
+  --idempotency-key case-001-v1 `
+  --objective "Estimate and validate the dynamics in the attached brief." `
+  --attachment .\brief.pdf `
+  --attachment .\series.csv
+
+fma-ops --task-root .\tasks doctor
+```
+
 ## V5.9 Studio：真实 S0–S6 窄域纵切
 
 本地 Studio Bridge 已接通可运行的 S0–S1 纵向切片。S1 不是单次
@@ -90,6 +115,9 @@ POST /api/v1/tasks/{task_id}/run-s1
 POST /api/v1/tasks/{task_id}/data/ode
 POST /api/v1/tasks/{task_id}/run-backhalf
 GET  /api/v1/tasks/{task_id}
+GET  /api/v1/tasks/{task_id}/next-packet
+GET  /api/v1/doctor
+POST /api/v1/operator/reconcile
 ```
 
 浏览器只持一次性 Bridge token；外部 HMAC authority key 始终留在本地

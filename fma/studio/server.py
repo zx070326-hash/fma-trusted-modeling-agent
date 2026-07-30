@@ -13,6 +13,12 @@ from .service import StudioBridgeError, StudioTaskService
 
 
 _TASK_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)")
+_NEXT_PACKET_ROUTE = re.compile(
+    r"/api/v1/tasks/([A-Za-z0-9._-]+)/next-packet"
+)
+_INTAKE_CREATE_TASK_ROUTE = re.compile(
+    r"/api/v1/intakes/([A-Za-z0-9._-]+)/create-task"
+)
 _RUN_S0_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/run-s0")
 _PREPARE_PREDATA_ROUTE = re.compile(r"/api/v1/tasks/([A-Za-z0-9._-]+)/prepare-predata")
 _RECONCILE_PREDATA_ROUTE = re.compile(
@@ -205,6 +211,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/tasks":
                 self._send(200, self.server.service.list_tasks())
                 return
+            if path == "/api/v1/doctor":
+                self._send(200, self.server.service.operator_doctor_v70())
+                return
+            match = _NEXT_PACKET_ROUTE.fullmatch(path)
+            if match:
+                self._send(
+                    200,
+                    {
+                        "status": "success",
+                        "packet": self.server.service.project_next_packet_v70(
+                            match.group(1)
+                        ),
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
+                return
             match = _TASK_ROUTE.fullmatch(path)
             if match:
                 self._send(200, self.server.service.snapshot(match.group(1)))
@@ -221,6 +244,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/tasks":
                 payload = self._body()
                 self._send(201, self.server.service.create_task(payload))
+                return
+            if path == "/api/v1/operator/reconcile":
+                self._consume_empty_action_body()
+                self._send(
+                    200,
+                    self.server.service.reconcile_operator_v70(),
+                )
+                return
+            match = _INTAKE_CREATE_TASK_ROUTE.fullmatch(path)
+            if match:
+                self._consume_empty_action_body()
+                self._send(
+                    201,
+                    self.server.service.create_task_from_intake_v70(
+                        match.group(1)
+                    ),
+                )
                 return
             match = _RUN_S0_ROUTE.fullmatch(path)
             if match:

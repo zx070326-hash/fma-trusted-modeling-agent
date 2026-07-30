@@ -1181,6 +1181,8 @@ function IntakeWorkspace({
     : false;
   const epistemic = bridge.task?.epistemic;
   const portfolio = bridge.task?.portfolio_v69;
+  const operator = bridge.task?.operator_v70;
+  const nextPacket = bridge.task?.next_packet_v70;
 
   const createTask = async () => {
     if (bridge.connected) {
@@ -1499,7 +1501,8 @@ function IntakeWorkspace({
         <div className="intake-footer">
           <div className="truth-note">
             <span aria-hidden="true">i</span>
-            文件当前只停留在浏览器；未接入执行服务前不会上传或运行模型。
+            浏览器选择的文件仍只停留在本机页面；需要附件事务时使用
+            `fma-ops intake`，系统会先哈希并完整发布，再创建正式任务。
           </div>
           <button
             className="primary-button"
@@ -1577,6 +1580,33 @@ function IntakeWorkspace({
                 </div>
               ))}
             </div>
+            {operator && (
+              <div
+                className="epistemic-summary"
+                aria-label="V7.0 durable operator status"
+              >
+                <div>
+                  <span>Operator 状态</span>
+                  <strong>
+                    {operator.live_lease
+                      ? "LEASED"
+                      : operator.latest_work?.status ?? "IDLE"}
+                  </strong>
+                </div>
+                <div>
+                  <span>当前工作</span>
+                  <strong>{operator.latest_work?.action ?? "尚未排队"}</strong>
+                </div>
+                <div>
+                  <span>下一工作包</span>
+                  <strong>{nextPacket?.action ?? "等待输入或检查"}</strong>
+                </div>
+                <div>
+                  <span>权威边界</span>
+                  <strong>WORKFLOW ONLY</strong>
+                </div>
+              </div>
+            )}
             {epistemic && (
               <div className="epistemic-summary">
                 <div>

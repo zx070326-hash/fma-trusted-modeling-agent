@@ -666,6 +666,32 @@ def test_s0_runs_generator_reviewer_check_and_gate(tmp_path: Path) -> None:
     assert (root / "docs" / "regime.json").is_file()
 
 
+def test_v70_async_s0_uses_durable_operator_lease_and_authority_projection(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.create_task({"objective": OBJECTIVE, "workspace_id": "operator-s0"})
+
+    accepted = service.start_s0("operator-s0")
+    assert accepted["operator_v70"]["live_lease"] is True
+    assert accepted["operator_v70"]["latest_work"]["status"] == "LEASED"
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        snapshot = service.snapshot("operator-s0")
+        if not snapshot["operator_v70"]["live_lease"]:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("operator-backed S0 did not finish within the test budget")
+
+    assert snapshot["workflow"]["stage_statuses"]["S0"] == "gate_open"
+    assert snapshot["operator_v70"]["latest_work"]["status"] == "ACCEPTED"
+    assert snapshot["operator_v70"]["latest_work"]["action"] == "run_s0"
+    assert snapshot["scientific_qualification_granted"] is False
+    assert snapshot["real_world_action_authorized"] is False
+
+
 def test_s1_runs_parallel_branches_broker_translation_and_dual_review(
     tmp_path: Path,
 ) -> None:

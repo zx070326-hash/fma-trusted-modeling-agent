@@ -27,6 +27,19 @@ from pydantic import Field, ValidationError, model_validator
 from fma._file_lock import exclusive_file_lock
 from fma.codex_driver import CliLocator, CodexCLIConfig, ProcessRunner
 from fma.hashing import canonical_json, sha256_value
+from fma.operator_v70 import (
+    IntakeManifestV70,
+    OperatorAuthorityBindingV70,
+    OperatorConflictError,
+    OperatorLeaseError,
+    OperatorLeaseV70,
+    OperatorPacketV70,
+    OperatorPlaneError,
+    OperatorStoreV70,
+    OperatorSubmissionV70,
+    capture_file_manifest,
+    changed_manifest_paths,
+)
 from fma.schemas import ArtifactRef, StrictModel
 from fma.v2.schemas import Identifier, Sha256
 from fma.v5.scaffold import scaffold_task_workspace
@@ -212,6 +225,114 @@ _S1_PATHS = (
     EXECUTABLE_CANDIDATE_IR_PATH,
     CANDIDATE_EXECUTION_BINDING_PATH_V67,
 )
+_OPERATOR_POLICY_V70 = {
+    "schema_version": "7.0-studio-operator-policy",
+    "authority_boundary": (
+        "operator work state never opens a stage gate or grants scientific authority"
+    ),
+    "lease_fencing_required": True,
+    "worker_submission_requires_authority_projection": True,
+    "max_attempts": 3,
+    "default_lease_seconds": 300,
+    "actions": {
+        "run_s0": {
+            "purpose": "Materialize and independently review the S0 problem contract.",
+            "write_paths": ["."],
+            "expected_outputs": ["current authenticated S0 gate or typed failure"],
+            "tool_profile": "codex_stage_roles_local",
+        },
+        "prepare_predata_v67": {
+            "purpose": "Freeze typed source and measurement contracts before observation access.",
+            "write_paths": ["docs", "data", ".fma"],
+            "expected_outputs": ["authenticated pre-data transaction receipt"],
+            "tool_profile": "typed_local_input",
+        },
+        "reconcile_predata_v67": {
+            "purpose": "Replay the exact interrupted pre-data publication transaction.",
+            "write_paths": ["docs", "data", ".fma"],
+            "expected_outputs": ["reconciled pre-data transaction state"],
+            "tool_profile": "deterministic_local_reconcile",
+        },
+        "run_s1": {
+            "purpose": "Run isolated candidate branches, synthesis, and independent S1 review.",
+            "write_paths": ["."],
+            "expected_outputs": ["current authenticated S1 gate or typed failure"],
+            "tool_profile": "codex_parallel_roles_local",
+        },
+        "ingest_ode_data": {
+            "purpose": "Freeze user-supplied observations against the current S1 authority.",
+            "write_paths": ["data", ".fma"],
+            "expected_outputs": ["hash-bound raw-data baseline"],
+            "tool_profile": "typed_local_input",
+        },
+        "ingest_world_bank_data": {
+            "purpose": "Acquire and freeze the registered public source against current authority.",
+            "write_paths": ["data", ".fma"],
+            "expected_outputs": ["source receipt and authenticated raw-data baseline"],
+            "tool_profile": "allowlisted_public_source",
+        },
+        "run_backhalf": {
+            "purpose": "Execute and independently verify the registered S2-S6 capability path.",
+            "write_paths": ["."],
+            "expected_outputs": ["current authenticated S6 gate or typed failure"],
+            "tool_profile": "codex_and_typed_adapters_local",
+        },
+        "prepare_portfolio_v69": {
+            "purpose": "Freeze the development-only parallel portfolio protocol.",
+            "write_paths": [".fma", "results"],
+            "expected_outputs": ["portfolio protocol and intent receipt"],
+            "tool_profile": "typed_local_input",
+        },
+        "ingest_portfolio_v69": {
+            "purpose": "Bind a public series to the frozen development portfolio.",
+            "write_paths": [".fma", "data", "results"],
+            "expected_outputs": ["portfolio data snapshot receipt"],
+            "tool_profile": "typed_local_input",
+        },
+        "run_portfolio_v69": {
+            "purpose": "Evaluate isolated development branches under one code-owned selector.",
+            "write_paths": ["."],
+            "expected_outputs": ["SELECT or ABSTAIN development decision"],
+            "tool_profile": "typed_development_portfolio",
+        },
+        "reconcile_portfolio_v69": {
+            "purpose": "Replay an interrupted portfolio transaction without changing policy.",
+            "write_paths": ["."],
+            "expected_outputs": ["reconciled portfolio transaction state"],
+            "tool_profile": "deterministic_local_reconcile",
+        },
+        "inspect_s0": {
+            "purpose": "Inspect S0 evidence, reviews, and gate status without mutation.",
+            "write_paths": [],
+            "expected_outputs": ["read-only S0 status"],
+            "tool_profile": "read_only",
+        },
+        "inspect_s1": {
+            "purpose": "Inspect candidate provenance and the S1 gate without mutation.",
+            "write_paths": [],
+            "expected_outputs": ["read-only S1 status"],
+            "tool_profile": "read_only",
+        },
+        "inspect_s6": {
+            "purpose": "Inspect workflow evidence and claim ceilings without mutation.",
+            "write_paths": [],
+            "expected_outputs": ["read-only S6 delivery status"],
+            "tool_profile": "read_only",
+        },
+        "recover": {
+            "purpose": "Apply one code-owned recovery transition to the modeling graph.",
+            "write_paths": ["."],
+            "expected_outputs": ["typed recovery transition receipt"],
+            "tool_profile": "deterministic_graph_recovery",
+        },
+    },
+}
+_OPERATOR_POLICY_HASH_V70 = sha256_value(_OPERATOR_POLICY_V70)
+_OPERATOR_MUTATING_ACTIONS_V70 = frozenset(
+    action
+    for action, policy in _OPERATOR_POLICY_V70["actions"].items()
+    if policy["write_paths"]
+)
 
 
 class StudioBridgeError(RuntimeError):
@@ -279,6 +400,16 @@ class CreateTaskRequest(StrictModel):
     evidence_scope: Literal["development", "public_data"] = "development"
     workflow_mode: Literal["legacy", "v67"] = "legacy"
     decision_use: DecisionUseRequestV62 | None = None
+    intake_id: str | None = Field(default=None, max_length=80)
+    intake_manifest_hash: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def validate_intake_binding(self) -> "CreateTaskRequest":
+        if (self.intake_id is None) != (self.intake_manifest_hash is None):
+            raise ValueError(
+                "intake_id and intake_manifest_hash must be supplied together"
+            )
+        return self
 
 
 class StudioWorkflowModeContractV67(StrictModel):
@@ -482,6 +613,13 @@ class StudioEvent(StrictModel):
     recorded_at: datetime
     previous_event_hash: str | None = None
     event_hash: str
+
+
+@dataclass(frozen=True)
+class _OperatorRunClaimV70:
+    packet: OperatorPacketV70
+    lease: OperatorLeaseV70
+    before_manifest: dict[str, str]
 
 
 class RoleTransportFactory(Protocol):
@@ -927,6 +1065,7 @@ class StudioTaskService:
         self.codex_cli_locator = codex_cli_locator
         self.role_transport_factory = role_transport_factory
         self.world_bank_fetcher = world_bank_fetcher
+        self.operator_store = OperatorStoreV70(self.task_root)
         self._lock = threading.RLock()
         self._active_tasks: set[str] = set()
 
@@ -949,6 +1088,419 @@ class StudioTaskService:
             authority_key=self.authority_key,
             authority_key_id=self.authority_key_id,
         )
+
+    def _operator_authority_binding_v70(
+        self,
+        workspace: StageWorkspaceV50,
+    ) -> OperatorAuthorityBindingV70:
+        if workspace.spec.spec_hash is None:
+            raise StudioConflictError("operator projection requires a sealed workspace")
+        if not workspace.verify():
+            raise StudioConflictError(
+                "operator projection refuses an invalid authority workspace"
+            )
+        intake_records = workspace._artifacts_of_kind(
+            "studio_intake_manifest_v70"
+        )
+        installed_intake = workspace.root / "problem" / "intake"
+        if len(intake_records) > 1:
+            raise StudioConflictError(
+                "operator projection found multiple committed intake manifests"
+            )
+        if intake_records:
+            try:
+                intake = IntakeManifestV70.model_validate(
+                    intake_records[0][1]
+                )
+                self.operator_store.verify_materialized_intake(
+                    intake.intake_id,
+                    workspace.root,
+                )
+            except (ValueError, OperatorPlaneError) as exc:
+                raise StudioConflictError(
+                    "operator projection refuses a changed workspace intake"
+                ) from exc
+        elif installed_intake.exists():
+            raise StudioConflictError(
+                "operator projection refuses an unbound workspace intake"
+            )
+        state = workspace.graph.project_state()
+        status = workspace.status()
+        return OperatorAuthorityBindingV70.seal(
+            workspace_id=workspace.spec.workspace_id,
+            graph_id=workspace.spec.graph_id,
+            workspace_spec_hash=workspace.spec.spec_hash,
+            graph_snapshot_hash=state.snapshot.snapshot_hash,
+            frontier_node_hashes=tuple(
+                sorted(state.snapshot.frontier_node_hashes)
+            ),
+            stage_statuses=dict(status.stage_statuses),
+            current_gate_hashes=dict(status.current_gate_hashes),
+            frontier_stages=tuple(status.frontier_stages),
+            operator_policy_hash=_OPERATOR_POLICY_HASH_V70,
+        )
+
+    def _operator_packet_v70(
+        self,
+        workspace: StageWorkspaceV50,
+        action: str,
+    ) -> OperatorPacketV70:
+        try:
+            policy = cast(dict[str, Any], _OPERATOR_POLICY_V70["actions"][action])
+        except KeyError as exc:
+            raise StudioValidationError(
+                f"operator action is not registered: {action}"
+            ) from exc
+        binding = self._operator_authority_binding_v70(workspace)
+        idempotency_key = "studio-v70:" + sha256_value(
+            {
+                "workspace_id": workspace.spec.workspace_id,
+                "action": action,
+                "authority_binding_hash": binding.binding_hash,
+                "operator_policy_hash": _OPERATOR_POLICY_HASH_V70,
+            }
+        )
+        return OperatorPacketV70.seal(
+            workspace_id=workspace.spec.workspace_id,
+            action=action,
+            purpose=policy["purpose"],
+            authority_binding=binding,
+            read_paths=(".",),
+            write_paths=tuple(policy["write_paths"]),
+            allowed_tool_profile=policy["tool_profile"],
+            expected_outputs=tuple(policy["expected_outputs"]),
+            max_attempts=cast(int, _OPERATOR_POLICY_V70["max_attempts"]),
+            lease_seconds=cast(
+                int, _OPERATOR_POLICY_V70["default_lease_seconds"]
+            ),
+            max_wall_seconds=1800,
+            idempotency_key=idempotency_key,
+        )
+
+    @staticmethod
+    def _preferred_operator_action_v70(actions: list[str]) -> str | None:
+        for action in actions:
+            if action in _OPERATOR_MUTATING_ACTIONS_V70:
+                return action
+        return actions[0] if actions else None
+
+    def project_next_packet_v70(
+        self,
+        task_id: str,
+        *,
+        next_valid_actions: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Pure read-only projection of the next bounded work packet."""
+
+        workspace = self._workspace(task_id)
+        actions = next_valid_actions
+        if actions is None:
+            actions = cast(
+                list[str],
+                self.snapshot(
+                    task_id,
+                    _include_operator_packet=False,
+                )["next_valid_actions"],
+            )
+        action = self._preferred_operator_action_v70(actions)
+        if action is None:
+            return None
+        packet = self._operator_packet_v70(workspace, action)
+        return packet.model_dump(mode="json")
+
+    def _prepare_operator_run_v70(
+        self,
+        task_id: str,
+        action: str,
+    ) -> _OperatorRunClaimV70:
+        workspace = self._workspace(task_id)
+        packet = self._operator_packet_v70(workspace, action)
+        work = self.operator_store.ensure_work(packet)
+        current = self._operator_authority_binding_v70(self._workspace(task_id))
+        if current.binding_hash != packet.authority_binding.binding_hash:
+            raise StudioConflictError(
+                "authority graph changed before operator work could be claimed"
+            )
+        worker_id = (
+            f"studio-{os.getpid()}-{threading.get_ident()}-{uuid4().hex[:12]}"
+        )
+        try:
+            lease = self.operator_store.claim(
+                cast(str, work["work_id"]),
+                worker_id=worker_id,
+                lease_seconds=packet.lease_seconds,
+            )
+        except OperatorConflictError as exc:
+            raise StudioConflictError(str(exc)) from exc
+        except OperatorPlaneError as exc:
+            raise StudioBridgeError(str(exc)) from exc
+        try:
+            before = capture_file_manifest(self._task_path(task_id))
+        except Exception as exc:
+            try:
+                self.operator_store.fail(
+                    lease,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            except OperatorPlaneError:
+                pass
+            raise StudioBridgeError(
+                "operator could not capture the pre-run workspace manifest"
+            ) from exc
+        return _OperatorRunClaimV70(
+            packet=packet,
+            lease=lease,
+            before_manifest=before,
+        )
+
+    @staticmethod
+    def _operator_authority_receipt_v70(
+        *,
+        action: str,
+        workspace: StageWorkspaceV50,
+        result: dict[str, Any],
+        output_binding: OperatorAuthorityBindingV70,
+    ) -> tuple[bool, str, tuple[str, ...]]:
+        stage_for_action = {
+            "run_s0": "S0",
+            "run_s1": "S1",
+            "run_backhalf": "S6",
+        }
+        stage = stage_for_action.get(action)
+        if stage is not None:
+            gate_hash = workspace.current_gate(cast(StageId, stage))
+            if gate_hash is None:
+                return (
+                    False,
+                    cast(str, output_binding.binding_hash),
+                    (f"{stage.lower()}_gate_not_open",),
+                )
+            return True, gate_hash, ()
+        if action == "run_portfolio_v69":
+            portfolio = cast(dict[str, Any], result.get("portfolio_v69") or {})
+            run_hash = portfolio.get("run_hash")
+            completed = (
+                portfolio.get("transaction_status") == "COMPLETED"
+                and isinstance(run_hash, str)
+                and len(run_hash) == 64
+            )
+            return (
+                completed,
+                run_hash if completed else cast(str, output_binding.binding_hash),
+                () if completed else ("portfolio_not_completed",),
+            )
+        return (
+            workspace.verify(),
+            cast(str, output_binding.binding_hash),
+            () if workspace.verify() else ("authority_workspace_invalid",),
+        )
+
+    def _execute_operator_run_v70(
+        self,
+        claim: _OperatorRunClaimV70,
+        callback: Any,
+    ) -> dict[str, Any]:
+        stop_heartbeat = threading.Event()
+        heartbeat_errors: list[Exception] = []
+
+        def heartbeat_worker() -> None:
+            interval = max(10, claim.packet.lease_seconds // 3)
+            while not stop_heartbeat.wait(interval):
+                try:
+                    self.operator_store.heartbeat(
+                        claim.lease,
+                        lease_seconds=claim.packet.lease_seconds,
+                    )
+                except Exception as exc:
+                    heartbeat_errors.append(exc)
+                    return
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_worker,
+            name=f"fma-operator-heartbeat-{claim.lease.work_id}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            result = cast(dict[str, Any], callback())
+        except Exception as exc:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1)
+            try:
+                self.operator_store.fail(
+                    claim.lease,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            except OperatorLeaseError:
+                pass
+            raise
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
+        workspace = self._workspace(claim.packet.workspace_id)
+        output_binding = self._operator_authority_binding_v70(workspace)
+        after = capture_file_manifest(workspace.root)
+        changed_paths = changed_manifest_paths(claim.before_manifest, after)
+        submission = OperatorSubmissionV70.seal(
+            work_id=claim.lease.work_id,
+            packet_hash=cast(str, claim.packet.packet_hash),
+            input_binding_hash=cast(
+                str, claim.packet.authority_binding.binding_hash
+            ),
+            output_binding=output_binding,
+            before_manifest_hash=sha256_value(claim.before_manifest),
+            after_manifest_hash=sha256_value(after),
+            changed_paths=changed_paths,
+            result_summary={
+                "action": claim.packet.action,
+                "workflow_stage_statuses": result.get("workflow", {}).get(
+                    "stage_statuses", {}
+                ),
+                "authority_workspace_verified": workspace.verify(),
+                "heartbeat_error_types": [
+                    type(error).__name__ for error in heartbeat_errors
+                ],
+            },
+            submitted_at=_utc_now().isoformat(),
+        )
+        self.operator_store.submit(claim.lease, submission)
+        accepted, receipt_hash, reasons = self._operator_authority_receipt_v70(
+            action=claim.packet.action,
+            workspace=workspace,
+            result=result,
+            output_binding=output_binding,
+        )
+        self.operator_store.project_authority_decision(
+            claim.lease.work_id,
+            accepted=accepted,
+            authority_receipt_hash=receipt_hash,
+            reason_codes=reasons,
+        )
+        return result
+
+    def _fail_operator_claim_v70(
+        self,
+        claim: _OperatorRunClaimV70,
+        exc: BaseException,
+    ) -> None:
+        try:
+            self.operator_store.fail(
+                claim.lease,
+                error_type=type(exc).__name__,
+                message=str(exc),
+            )
+        except OperatorPlaneError:
+            return
+
+    def reconcile_operator_v70(self) -> dict[str, Any]:
+        """Repair only exact submitted effects from authenticated graph facts."""
+
+        expired = self.operator_store.reconcile_expired()
+        reconciled: list[str] = []
+        work_items = self.operator_store.list_work()
+        ambiguous: list[str] = [
+            cast(str, item["work_id"])
+            for item in work_items
+            if item["status"] == "RECOVERY_PENDING"
+        ]
+        for item in work_items:
+            if item["status"] != "SUBMITTED" or item["submission"] is None:
+                continue
+            packet = OperatorPacketV70.model_validate(item["packet"])
+            submission = OperatorSubmissionV70.model_validate(
+                item["submission"]
+            )
+            try:
+                workspace = self._workspace(packet.workspace_id)
+                current_binding = self._operator_authority_binding_v70(workspace)
+                current_manifest_hash = sha256_value(
+                    capture_file_manifest(workspace.root)
+                )
+            except Exception:
+                ambiguous.append(cast(str, item["work_id"]))
+                continue
+            if (
+                submission.output_binding.binding_hash
+                != current_binding.binding_hash
+                or submission.after_manifest_hash != current_manifest_hash
+            ):
+                ambiguous.append(cast(str, item["work_id"]))
+                continue
+            output_binding = submission.output_binding
+            accepted, receipt_hash, reasons = (
+                self._operator_authority_receipt_v70(
+                    action=packet.action,
+                    workspace=workspace,
+                    result=self.snapshot(
+                        packet.workspace_id,
+                        _include_operator_packet=False,
+                    ),
+                    output_binding=output_binding,
+                )
+            )
+            self.operator_store.reconcile_authority_effect(
+                cast(str, item["work_id"]),
+                output_binding=output_binding,
+                authority_receipt_hash=receipt_hash,
+                reason_code=(
+                    "exact_submitted_authority_projection_recovered"
+                    if accepted
+                    else (
+                        reasons[0]
+                        if reasons
+                        else "exact_submitted_authority_rejection_recovered"
+                    )
+                ),
+                accepted=accepted,
+            )
+            reconciled.append(cast(str, item["work_id"]))
+        return {
+            "status": "success",
+            "schema_version": "7.0-operator-reconcile",
+            "expired_work_ids": expired,
+            "authority_reconciled_work_ids": reconciled,
+            "authority_ambiguous_work_ids": sorted(set(ambiguous)),
+            "scientific_qualification_granted": False,
+            "real_world_action_authorized": False,
+        }
+
+    def operator_doctor_v70(self) -> dict[str, Any]:
+        operational = self.operator_store.doctor()
+        authority_errors: dict[str, str] = {}
+        checked = 0
+        for child in sorted(self.task_root.iterdir()):
+            if not child.is_dir() or child.name == self.operator_store.root.name:
+                continue
+            workspace_spec = child / ".fma" / "workspace_spec.json"
+            if not workspace_spec.exists():
+                if (child / ".fma").exists():
+                    authority_errors[child.name] = "workspace_spec_missing"
+                continue
+            checked += 1
+            try:
+                workspace = self._workspace(child.name)
+                self._operator_authority_binding_v70(workspace)
+            except Exception as exc:
+                authority_errors[child.name] = type(exc).__name__
+        status = (
+            "FAIL"
+            if operational["status"] == "FAIL" or authority_errors
+            else operational["status"]
+        )
+        return {
+            "status": status,
+            "schema_version": "7.0-studio-doctor",
+            "operational": operational,
+            "authority": {
+                "status": "FAIL" if authority_errors else "PASS",
+                "workspace_count": checked,
+                "errors": authority_errors,
+            },
+            "claim_scope": "workflow_control_only",
+            "scientific_qualification_granted": False,
+            "real_world_action_authorized": False,
+        }
 
     def _event_path(self, task_id: str) -> Path:
         return self._task_path(task_id) / ".fma" / "studio_events.jsonl"
@@ -1986,6 +2538,54 @@ class StudioTaskService:
                 "complete or inspect that isolated side lane in this task"
             )
 
+    def publish_intake_v70(
+        self,
+        *,
+        idempotency_key: str,
+        objective: str,
+        attachment_paths: list[str | Path] | tuple[str | Path, ...] = (),
+        workspace_id: str | None = None,
+        evidence_scope: Literal["development", "public_data"] = "development",
+        workflow_mode: Literal["legacy", "v67"] = "legacy",
+    ) -> dict[str, Any]:
+        """Publish an immutable untrusted intake without creating a task."""
+
+        try:
+            manifest = self.operator_store.publish_intake(
+                idempotency_key=idempotency_key,
+                objective=objective,
+                attachment_paths=attachment_paths,
+                requested_workspace_id=workspace_id,
+                evidence_scope=evidence_scope,
+                workflow_mode=workflow_mode,
+            )
+        except (ValueError, OperatorPlaneError) as exc:
+            raise StudioValidationError(str(exc)) from exc
+        return {
+            "status": "success",
+            "intake": manifest.model_dump(mode="json"),
+            "next_action": "create_task_from_intake",
+            "claim_scope": "workflow_control_only",
+            "scientific_qualification_granted": False,
+            "real_world_action_authorized": False,
+        }
+
+    def create_task_from_intake_v70(self, intake_id: str) -> dict[str, Any]:
+        try:
+            manifest = self.operator_store.get_intake(intake_id)
+        except OperatorPlaneError as exc:
+            raise StudioValidationError(str(exc)) from exc
+        return self.create_task(
+            {
+                "objective": manifest.objective,
+                "workspace_id": manifest.requested_workspace_id,
+                "evidence_scope": manifest.evidence_scope,
+                "workflow_mode": manifest.workflow_mode,
+                "intake_id": manifest.intake_id,
+                "intake_manifest_hash": manifest.manifest_hash,
+            }
+        )
+
     def create_task(
         self, request: CreateTaskRequest | dict[str, Any]
     ) -> dict[str, Any]:
@@ -1999,7 +2599,44 @@ class StudioTaskService:
             raise StudioValidationError(str(exc)) from exc
         objective = validated.objective.strip()
         decision_intent = _decision_intent_from_request(validated.decision_use)
-        if validated.workflow_mode == "v67":
+        intake_manifest: IntakeManifestV70 | None = None
+        if validated.intake_id is not None:
+            try:
+                intake_manifest = self.operator_store.get_intake(
+                    validated.intake_id
+                )
+            except OperatorPlaneError as exc:
+                raise StudioValidationError(str(exc)) from exc
+            if (
+                intake_manifest.manifest_hash != validated.intake_manifest_hash
+                or intake_manifest.objective != objective
+                or intake_manifest.evidence_scope != validated.evidence_scope
+                or intake_manifest.workflow_mode != validated.workflow_mode
+                or (
+                    intake_manifest.requested_workspace_id is not None
+                    and validated.workspace_id
+                    != intake_manifest.requested_workspace_id
+                )
+            ):
+                raise StudioConflictError(
+                    "task request differs from the published intake manifest"
+                )
+        if intake_manifest is not None:
+            mission_payload = {
+                "schema_version": "studio-mission-4-intake-bound",
+                "objective": objective,
+                "value_owner": "user",
+                "workflow_mode": validated.workflow_mode,
+                "evidence_scope": validated.evidence_scope,
+                "decision_intent_hash": (
+                    decision_intent.intent_hash
+                    if decision_intent is not None
+                    else None
+                ),
+                "intake_id": intake_manifest.intake_id,
+                "intake_manifest_hash": intake_manifest.manifest_hash,
+            }
+        elif validated.workflow_mode == "v67":
             mission_payload = {
                 "schema_version": "studio-mission-3",
                 "objective": objective,
@@ -2025,7 +2662,9 @@ class StudioTaskService:
                 }
             )
         mission_hash = sha256_value(mission_payload)
-        if validated.workflow_mode == "v67":
+        if intake_manifest is not None:
+            derived = mission_hash[:12]
+        elif validated.workflow_mode == "v67":
             derived = sha256_value(
                 {
                     "objective": objective,
@@ -2095,19 +2734,90 @@ class StudioTaskService:
                                 contract.model_dump(mode="json"),
                             )
                         self._commit_predata_transaction_policy_v67(workspace)
+                if intake_manifest is not None:
+                    installed_path = (
+                        root / "problem" / "intake" / "manifest.json"
+                    )
+                    if not installed_path.is_file():
+                        raise StudioConflictError(
+                            "intake-bound workspace is missing its installed manifest"
+                        )
+                    installed = IntakeManifestV70.model_validate_json(
+                        installed_path.read_text(encoding="utf-8")
+                    )
+                    if (
+                        installed.manifest_hash
+                        != intake_manifest.manifest_hash
+                    ):
+                        raise StudioConflictError(
+                            "installed intake manifest differs on task replay"
+                        )
+                    self.operator_store.verify_materialized_intake(
+                        intake_manifest.intake_id,
+                        root,
+                    )
+                    prior_binding = self.operator_store.get_intake_binding(
+                        intake_manifest.intake_id,
+                        workspace_id=task_id,
+                    )
+                    if prior_binding is None:
+                        binding = self._operator_authority_binding_v70(workspace)
+                        if (
+                            binding.current_gate_hashes
+                            or binding.frontier_stages != ("S0",)
+                            or binding.stage_statuses.get("S0") != "frontier"
+                        ):
+                            raise StudioConflictError(
+                                "advanced intake workspace is missing its "
+                                "original operator binding"
+                            )
+                        self.operator_store.bind_intake(
+                            intake_manifest.intake_id,
+                            workspace_id=task_id,
+                            authority_binding_hash=cast(
+                                str,
+                                binding.binding_hash,
+                            ),
+                        )
                 return self.snapshot(task_id)
 
+            evidence_items = (
+                [
+                    {
+                        "kind": "studio_intake_manifest_v70",
+                        "sha256": intake_manifest.manifest_hash,
+                        "trust": "user_supplied_untrusted",
+                    }
+                ]
+                if intake_manifest is not None
+                else []
+            )
             evidence_snapshot_hash = sha256_value(
                 {
-                    "schema_version": "studio-evidence-1",
+                    "schema_version": (
+                        "studio-evidence-2-intake-bound"
+                        if intake_manifest is not None
+                        else "studio-evidence-1"
+                    ),
                     "objective_hash": hashlib.sha256(
                         objective.encode("utf-8")
                     ).hexdigest(),
-                    "items": [],
+                    "items": evidence_items,
                     "data_ingested": False,
                 }
             )
-            scaffold_task_workspace(root, task_id, objective)
+            creation_root = (
+                self.operator_store.staging_root
+                / f"w-{uuid4().hex[:12]}"
+                if intake_manifest is not None
+                else root
+            )
+            scaffold_task_workspace(creation_root, task_id, objective)
+            if intake_manifest is not None:
+                self.operator_store.materialize_intake(
+                    intake_manifest.intake_id,
+                    creation_root,
+                )
             spec = TaskWorkspaceSpecV50.seal(
                 workspace_id=task_id,
                 graph_id=f"v5-{task_id}",
@@ -2119,7 +2829,7 @@ class StudioTaskService:
                 evidence_scope=validated.evidence_scope,
             )
             workspace = StageWorkspaceV50.create(
-                root,
+                creation_root,
                 spec,
                 authority_key=self.authority_key,
                 authority_key_id=self.authority_key_id,
@@ -2146,8 +2856,30 @@ class StudioTaskService:
                 )
             if decision_intent is not None:
                 _write_json_new(
-                    root / DECISION_INTENT_PATH,
+                    creation_root / DECISION_INTENT_PATH,
                     decision_intent.model_dump(mode="json"),
+                )
+            if intake_manifest is not None:
+                workspace.commit_evidence(
+                    "studio_intake_manifest_v70",
+                    intake_manifest.model_dump(mode="json"),
+                )
+                if not workspace.verify():
+                    raise StudioConflictError(
+                        "intake-bound staging workspace failed verification"
+                    )
+                try:
+                    os.replace(creation_root, root)
+                except OSError as exc:
+                    raise StudioConflictError(
+                        "task workspace was concurrently created"
+                    ) from exc
+                workspace = self._workspace(task_id)
+                binding = self._operator_authority_binding_v70(workspace)
+                self.operator_store.bind_intake(
+                    intake_manifest.intake_id,
+                    workspace_id=task_id,
+                    authority_binding_hash=cast(str, binding.binding_hash),
                 )
             self._append_event(
                 task_id,
@@ -2172,13 +2904,28 @@ class StudioTaskService:
                         if decision_intent is not None
                         else None
                     ),
+                    "intake_id": (
+                        intake_manifest.intake_id
+                        if intake_manifest is not None
+                        else None
+                    ),
+                    "intake_manifest_hash": (
+                        intake_manifest.manifest_hash
+                        if intake_manifest is not None
+                        else None
+                    ),
                     "scientific_qualification_granted": False,
                     "real_world_action_authorized": False,
                 },
             )
             return self.snapshot(task_id)
 
-    def snapshot(self, task_id: str) -> dict[str, Any]:
+    def snapshot(
+        self,
+        task_id: str,
+        *,
+        _include_operator_packet: bool = True,
+    ) -> dict[str, Any]:
         workspace = self._workspace(task_id)
         status = workspace.status()
         events = self._events(task_id)
@@ -2191,6 +2938,7 @@ class StudioTaskService:
         scientific_closure = scientific_closure_summary_v62(workspace)
         with self._lock:
             active = task_id in self._active_tasks
+        active = active or self.operator_store.has_live_lease(task_id)
         predata_v67 = self._predata_projection_v67(
             workspace,
             active=active,
@@ -2259,7 +3007,7 @@ class StudioTaskService:
             next_valid_actions = ["inspect_s0"]
         else:
             next_valid_actions = ["run_s0"]
-        return {
+        payload = {
             "status": "success",
             "task_id": task_id,
             "objective": workspace.spec.objective,
@@ -2276,22 +3024,47 @@ class StudioTaskService:
             "scientific_closure": scientific_closure,
             "predata_v67": predata_v67,
             "portfolio_v69": portfolio_v69,
+            "operator_v70": self.operator_store.operational_summary(task_id),
             "next_valid_actions": next_valid_actions,
             "scientific_qualification_granted": False,
             "real_world_action_authorized": False,
         }
+        payload["next_packet_v70"] = (
+            self.project_next_packet_v70(
+                task_id,
+                next_valid_actions=next_valid_actions,
+            )
+            if _include_operator_packet
+            else None
+        )
+        return payload
 
     def list_tasks(self) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
+        corrupt_items: list[dict[str, str]] = []
         for child in sorted(self.task_root.iterdir()):
-            if (
-                not child.is_dir()
-                or not (child / ".fma" / "workspace_spec.json").is_file()
-            ):
+            if not child.is_dir() or child.name == self.operator_store.root.name:
+                continue
+            if not (child / ".fma" / "workspace_spec.json").is_file():
+                if (child / ".fma").exists():
+                    corrupt_items.append(
+                        {
+                            "task_id": child.name,
+                            "health": "corrupt",
+                            "reason_code": "workspace_spec_missing",
+                        }
+                    )
                 continue
             try:
                 snapshot = self.snapshot(child.name)
-            except (OSError, ValueError, RuntimeError):
+            except (OSError, ValueError, RuntimeError) as exc:
+                corrupt_items.append(
+                    {
+                        "task_id": child.name,
+                        "health": "corrupt",
+                        "reason_code": type(exc).__name__,
+                    }
+                )
                 continue
             items.append(
                 {
@@ -2299,9 +3072,15 @@ class StudioTaskService:
                     "objective": snapshot["objective"],
                     "activity": snapshot["activity"],
                     "stage_statuses": snapshot["workflow"]["stage_statuses"],
+                    "operator_status": snapshot["operator_v70"],
                 }
             )
-        return {"status": "success", "items": items}
+        return {
+            "status": "success",
+            "items": items,
+            "corrupt_items": corrupt_items,
+            "health": "degraded" if corrupt_items else "healthy",
+        }
 
     def _transport(self, task_id: str) -> StageRoleTransportV51:
         output_root = self._task_path(task_id) / ".fma" / "roles"
@@ -3456,17 +4235,49 @@ class StudioTaskService:
         with self._lock:
             if task_id in self._active_tasks:
                 raise StudioConflictError("task already has an active S0 run")
+        claim = self._prepare_operator_run_v70(task_id, "run_s0")
+        with self._lock:
+            if task_id in self._active_tasks:
+                conflict = StudioConflictError("task already has an active S0 run")
+                self._fail_operator_claim_v70(claim, conflict)
+                raise conflict
             self._active_tasks.add(task_id)
-        self._append_event(
-            task_id,
-            event_type="s0_run_accepted",
-            status="accepted",
-            message="Bounded S0 run accepted by the local bridge",
-        )
+        try:
+            self._append_event(
+                task_id,
+                event_type="s0_run_accepted",
+                status="accepted",
+                message="Bounded S0 run accepted by the local bridge",
+                details={
+                    "operator_work_id": claim.lease.work_id,
+                    "operator_packet_hash": claim.packet.packet_hash,
+                },
+            )
+        except Exception as exc:
+            with self._lock:
+                self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
+            raise
 
         def worker() -> None:
             try:
-                self.run_s0(task_id)
+                self._execute_operator_run_v70(
+                    claim,
+                    lambda: self.run_s0(task_id),
+                )
+            except OperatorPlaneError as exc:
+                self._append_event(
+                    task_id,
+                    event_type="operator_reconcile_required",
+                    status="blocked",
+                    message="S0 authority may have advanced; operator reconciliation is required",
+                    details={
+                        "operator_work_id": claim.lease.work_id,
+                        "error_type": type(exc).__name__,
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
             except Exception as exc:
                 self._append_event(
                     task_id,
@@ -3489,7 +4300,13 @@ class StudioTaskService:
             name=f"fma-studio-{task_id}-s0",
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception as exc:
+            with self._lock:
+                self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
+            raise
         return self.snapshot(task_id)
 
     @staticmethod
@@ -4271,6 +5088,14 @@ class StudioTaskService:
                 raise StudioConflictError(
                     "V6.9 portfolio run is no longer staged or recoverable"
                 )
+        claim = self._prepare_operator_run_v70(task_id, "run_portfolio_v69")
+        with self._lock:
+            if task_id in self._active_tasks:
+                conflict = StudioConflictError(
+                    "task already has an active stage run"
+                )
+                self._fail_operator_claim_v70(claim, conflict)
+                raise conflict
             self._active_tasks.add(task_id)
         run_intent_hash = (
             state.run_intent.run_intent_hash
@@ -4285,6 +5110,8 @@ class StudioTaskService:
                 message="Authenticated V6.9 development portfolio run accepted",
                 details={
                     "run_intent_hash": run_intent_hash,
+                    "operator_work_id": claim.lease.work_id,
+                    "operator_packet_hash": claim.packet.packet_hash,
                     "scientific_evidence_status": "NOT_RUN",
                     "scientific_qualification_granted": False,
                     "real_world_action_authorized": False,
@@ -4293,14 +5120,32 @@ class StudioTaskService:
                     f"portfolio-v69-run-accepted:{run_intent_hash}"
                 ),
             )
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
             raise
 
         def worker() -> None:
             try:
-                self._run_portfolio_v69_claimed(task_id)
+                self._execute_operator_run_v70(
+                    claim,
+                    lambda: self._run_portfolio_v69_claimed(task_id),
+                )
+            except OperatorPlaneError as exc:
+                self._append_event(
+                    task_id,
+                    event_type="operator_reconcile_required",
+                    status="blocked",
+                    message="Portfolio authority may have advanced; operator reconciliation is required",
+                    details={
+                        "operator_work_id": claim.lease.work_id,
+                        "error_type": type(exc).__name__,
+                        "scientific_evidence_status": "NOT_RUN",
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
             except Exception as exc:
                 self._append_event(
                     task_id,
@@ -4325,9 +5170,10 @@ class StudioTaskService:
         )
         try:
             thread.start()
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
             raise
         return self.snapshot(task_id)
 
@@ -5021,6 +5867,14 @@ class StudioTaskService:
                 raise StudioConflictError(
                     "V6.7 pre-data bundle must be prepared before S1"
                 )
+        claim = self._prepare_operator_run_v70(task_id, "run_s1")
+        with self._lock:
+            if task_id in self._active_tasks:
+                conflict = StudioConflictError(
+                    "task already has an active stage run"
+                )
+                self._fail_operator_claim_v70(claim, conflict)
+                raise conflict
             self._active_tasks.add(task_id)
         try:
             self._append_event(
@@ -5028,15 +5882,39 @@ class StudioTaskService:
                 event_type="s1_run_accepted",
                 status="accepted",
                 message="Bounded graph-native S1 run accepted by the local bridge",
+                details={
+                    "operator_work_id": claim.lease.work_id,
+                    "operator_packet_hash": claim.packet.packet_hash,
+                },
             )
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
             raise
 
         def worker() -> None:
             try:
-                self._run_s1_claimed(task_id, self._workspace(task_id))
+                self._execute_operator_run_v70(
+                    claim,
+                    lambda: self._run_s1_claimed(
+                        task_id,
+                        self._workspace(task_id),
+                    ),
+                )
+            except OperatorPlaneError as exc:
+                self._append_event(
+                    task_id,
+                    event_type="operator_reconcile_required",
+                    status="blocked",
+                    message="S1 authority may have advanced; operator reconciliation is required",
+                    details={
+                        "operator_work_id": claim.lease.work_id,
+                        "error_type": type(exc).__name__,
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
             except Exception as exc:
                 self._append_event(
                     task_id,
@@ -5061,9 +5939,10 @@ class StudioTaskService:
         )
         try:
             thread.start()
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
             raise
         return self.snapshot(task_id)
 
@@ -5701,17 +6580,51 @@ class StudioTaskService:
         with self._lock:
             if task_id in self._active_tasks:
                 raise StudioConflictError("task already has an active stage run")
+        claim = self._prepare_operator_run_v70(task_id, "run_backhalf")
+        with self._lock:
+            if task_id in self._active_tasks:
+                conflict = StudioConflictError(
+                    "task already has an active stage run"
+                )
+                self._fail_operator_claim_v70(claim, conflict)
+                raise conflict
             self._active_tasks.add(task_id)
-        self._append_event(
-            task_id,
-            event_type="backhalf_run_accepted",
-            status="accepted",
-            message="Registered scalar ODE S2-S6 run accepted by the local bridge",
-        )
+        try:
+            self._append_event(
+                task_id,
+                event_type="backhalf_run_accepted",
+                status="accepted",
+                message="Registered scalar ODE S2-S6 run accepted by the local bridge",
+                details={
+                    "operator_work_id": claim.lease.work_id,
+                    "operator_packet_hash": claim.packet.packet_hash,
+                },
+            )
+        except Exception as exc:
+            with self._lock:
+                self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
+            raise
 
         def worker() -> None:
             try:
-                self.run_backhalf(task_id)
+                self._execute_operator_run_v70(
+                    claim,
+                    lambda: self.run_backhalf(task_id),
+                )
+            except OperatorPlaneError as exc:
+                self._append_event(
+                    task_id,
+                    event_type="operator_reconcile_required",
+                    status="blocked",
+                    message="S2-S6 authority may have advanced; operator reconciliation is required",
+                    details={
+                        "operator_work_id": claim.lease.work_id,
+                        "error_type": type(exc).__name__,
+                        "scientific_qualification_granted": False,
+                        "real_world_action_authorized": False,
+                    },
+                )
             except Exception as exc:
                 self._append_event(
                     task_id,
@@ -5734,5 +6647,11 @@ class StudioTaskService:
             name=f"fma-studio-{task_id}-backhalf",
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception as exc:
+            with self._lock:
+                self._active_tasks.discard(task_id)
+            self._fail_operator_claim_v70(claim, exc)
+            raise
         return self.snapshot(task_id)

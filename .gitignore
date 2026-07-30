@@ -6,9 +6,22 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Local credentials and private signing material
+.env
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.p12
+*.pfx
+*.keystore
+*_private.pem
+*private_key*.pem
+
 # Local scratch and generated run output
 /.tmp-*
 /tmp/
+/.fma-op-v70/
 /bench_smoke/
 /demo_output/
 /codex_agent_output/
