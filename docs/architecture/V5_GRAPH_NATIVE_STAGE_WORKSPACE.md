@@ -154,7 +154,7 @@ python -m fma.v5 init `
 这套 V5 的设计精髓不是“让流程看起来完整”，而是让每个仍未解决的科学问题都以一个
 不可被文字掩盖的、可定位、可补齐的证据缺口留在 Graph 中。
 
-上传方案的逐条 `implemented / partial / deferred` 判断见
-[V5_REQUIREMENTS_TRACE.md](V5_REQUIREMENTS_TRACE.md)。冻结 synthetic control fixture
-的发布证据与适用边界见
-[experiments/iteration_28/RESULTS.md](experiments/iteration_28/RESULTS.md)。
+上传方案的逐条 `implemented / partial / deferred` 开发追踪保留在
+`evidence-archive-v7.0` 标签中的 `V5_REQUIREMENTS_TRACE.md`。冻结 synthetic
+control fixture 的运行证据属于本地历史实验归档，不进入精简公开源码树；
+公开仓库只保留可重建该流程的协议、实现和契约测试。

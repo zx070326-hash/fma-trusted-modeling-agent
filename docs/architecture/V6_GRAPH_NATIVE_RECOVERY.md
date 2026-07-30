@@ -142,6 +142,8 @@ and must continue to pass without granting scientific qualification or
 real-world action authority.
 
 Scientific-success semantics are now evaluated separately by the additive
-V6.1 gate described in `V6_1_SCIENTIFIC_SUCCESS_GATE.md`. Recovery transitions
+V6.1 gate described in
+[`../governance/V6_1_SCIENTIFIC_SUCCESS_GATE.md`](../governance/V6_1_SCIENTIFIC_SUCCESS_GATE.md).
+Recovery transitions
 do not themselves establish predictive, mechanistic, decision, or
 generalization success.

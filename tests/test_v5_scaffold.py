@@ -48,6 +48,7 @@ def test_scaffold_creates_empty_fail_closed_workspace(tmp_path: Path) -> None:
         for path in (created / "skills").rglob("SKILL.md")
     } == {
         "methods-mechanistic/SKILL.md",
+        "paper-authoring-native/SKILL.md",
         "regime-diagnosis/SKILL.md",
         "verification-manual/SKILL.md",
     }
@@ -86,6 +87,22 @@ def test_scaffold_accepts_existing_empty_target(tmp_path: Path) -> None:
     assert scaffold_task_workspace(target, "task-2", "Test a bounded hypothesis.") == (
         target.resolve()
     )
+
+
+def test_scaffold_requires_native_paper_skill(tmp_path: Path) -> None:
+    created = scaffold_task_workspace(
+        tmp_path / "task",
+        "task-paper",
+        "Preserve the evidence-bound publication workflow.",
+    )
+    (created / "skills" / "paper-authoring-native" / "SKILL.md").unlink()
+
+    with pytest.raises(WorkspaceScaffoldError, match="missing or unsafe"):
+        validate_task_scaffold(
+            created,
+            "task-paper",
+            "Preserve the evidence-bound publication workflow.",
+        )
 
 
 def test_scaffold_refuses_non_empty_target_without_changing_it(

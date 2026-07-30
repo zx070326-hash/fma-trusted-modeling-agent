@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fma-trusted-kernel"
-version = "0.3.0"
+version = "0.4.0"
 description = "A graph-native trustworthy kernel and staged workspace for mathematical modeling"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,7 @@ test = ["pytest>=8"]
 
 [project.scripts]
 fma-ops = "fma.operator_cli_v70:main"
+fma-paper = "fma.v7_1.paper_cli:main"
 fma-studio = "fma.studio.__main__:main"
 
 [project.urls]
@@ -44,4 +45,5 @@ fma = [
   "v5/task_template/*",
   "v5/task_template/gates/*",
   "v5/task_template/skills/*/*",
+  "v7_1/templates/*.tex",
 ]

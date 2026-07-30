@@ -34,6 +34,16 @@ certificate.
 - S6 builds the paper from `docs/` and machine-readable `results/`, with
   consistency and provenance checks. Do not hand-copy or invent numbers.
 
+After a current authenticated S6 gate, a full reader-facing paper may be
+created with the `paper-authoring-native` skill and `fma-paper`. This V7.1
+delivery is written below `delivery/paper/v71/`; it must not overwrite or
+reinterpret the S6 build. A fresh Codex context may author the narrative and
+typed manifests, but the Harness owns exact value substitution, manifest
+validation and hash binding, XeLaTeX compilation, every-page PNG rendering,
+cold context-isolated semantic/layout review, and staleness. `DRAFT_READY` is
+publication readiness only, not scientific qualification or real-world action
+authority.
+
 Backward work is allowed and expected. Record why in `docs/decisions.log`,
 invalidate the changed stage and all downstream certificates through the
 harness, then re-run the checks.

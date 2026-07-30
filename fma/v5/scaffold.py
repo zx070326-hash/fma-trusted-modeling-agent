@@ -239,6 +239,7 @@ def validate_task_scaffold(
         "Makefile",
         "gates/README.md",
         "skills/methods-mechanistic/SKILL.md",
+        "skills/paper-authoring-native/SKILL.md",
         "skills/regime-diagnosis/SKILL.md",
         "skills/verification-manual/SKILL.md",
     )

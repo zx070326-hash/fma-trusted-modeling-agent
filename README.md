@@ -8,7 +8,7 @@ FMA 是一个由 Codex 驱动、由确定性 Harness 掌握验证权的数学建
 > language models propose work while typed, fail-closed code owns evidence,
 > verification, recovery, and workflow transitions.
 
-当前版本：`0.3.0`（V7 Operator Plane）。
+当前版本：`0.4.0`（V7.1 Native Paper Delivery）。
 
 ## 当前能做什么
 
@@ -23,6 +23,7 @@ FMA 是一个由 Codex 驱动、由确定性 Harness 掌握验证权的数学建
 | 失败恢复 | PATCH、RETRY、BRANCH、ACQUIRE_DATA、HUMAN、ABSTAIN |
 | 运营连续性 | SQLite WAL、lease、heartbeat、fencing、reconcile、doctor |
 | 界面 | 本地 Studio Bridge 与 Web 前端 |
+| 完整论文交付 | 请求 `gpt-5.6-sol` 的新上下文成文、声明/数字/引用/图表绑定、XeLaTeX、逐页 PNG 和冷启动双审 |
 | 外部科学资格 | 协议和验证器已实现；没有外部独立节点时固定为 `NOT_RUN` |
 
 当前可执行后半链路仍是窄域能力：
@@ -67,7 +68,9 @@ flowchart TD
     V --> REC{"通过当前阶段？"}
     REC -->|"否"| BACK["诊断、撤销、补丁、换分支或采数"]
     BACK --> G
-    REC -->|"是"| DOS["Decision Dossier + Paper"]
+    REC -->|"是"| DOS["Decision Dossier + S6 consistency paper"]
+    DOS --> PUB["V7.1 Native Paper Delivery"]
+    PUB --> PQA["Claim audit + cold semantic review + PDF page review"]
 
     DOS -. "独立控制域" .-> EXT["External Qualification"]
     EXT --> Q["QUALIFY / REJECT / NOT_RUN"]
@@ -88,6 +91,8 @@ flowchart TD
 - Python 3.11 或更高版本；
 - 完整 Studio 角色运行需要可用的 Codex CLI；
 - Web 前端需要 Node.js 22.13 或更高版本。
+- V7.1 完整论文需要 XeLaTeX、Poppler 的 `pdfinfo`/`pdftoppm`，以及
+  `Noto Serif SC`、`Noto Sans SC` 字体。
 
 安装 Python 包：
 
@@ -117,9 +122,30 @@ fma-ops --task-root .\tasks doctor
 ```powershell
 fma-ops --help
 fma-studio --help
+fma-paper --help
 python -m fma --help
 python -m fma.v5 --help
 ```
+
+在一个已有当前 S6 Gate 的任务上生成完整论文：
+
+```powershell
+fma-paper run `
+  --workspace .\tasks\<task-id> `
+  --key-file C:\secure\fma-authority.key `
+  --title "Evidence-bound Mathematical Modeling Study" `
+  --author "Your Name" `
+  --model gpt-5.6-sol `
+  --codex-bin C:\path\to\codex.exe
+```
+
+该链路把新 Codex 上下文用作作者，再由作者上下文之外的新上下文复核每项 claim；
+Harness 注入机器数值，逐字段校验已进入 S0--S6 的结构化引用快照，并校验
+图表与 CSV 哈希；连续两遍编译 XeLaTeX，把每一页 PNG 交给冷启动版式角色，
+随后在干净目录重编译、重渲染并逐哈希比对。最终
+`DRAFT_READY` 只表示论文交付闭合，不表示底层模型已取得科学资格、外部
+有效性或现实行动权限。命令记录 requested model，但
+`served_model_attested=false`。
 
 运行精简后的公开契约测试：
 
@@ -146,6 +172,7 @@ npm run dev
 |---|---|
 | `fma-ops` | Intake、状态、Next Packet、reconcile 和 doctor |
 | `fma-studio` | 仅绑定 loopback 的本地执行 Bridge |
+| `fma-paper` | S6 后原生 Codex 完整论文、双重复核、PDF 构建与失效验证 |
 | `python -m fma` | 早期可信建模内核和 benchmark 命令 |
 | `python -m fma.v5` | S0–S6 工作区、Gate、撤销和论文构建 |
 | `frontend/` | 面向任务、图、候选和证据状态的 Web 界面 |
@@ -160,6 +187,7 @@ fma/
   v5/                   # Graph-native S0-S6 权威工作区
   v5_8/                 # 多分支知识共享与认识图
   v6/                   # 能力包、恢复、科学成功与外部资格
+  v7_1/                 # 证据约束的原生 Codex 论文交付
 frontend/               # Web 控制台
 tests/                  # 精简的公开契约与 Operator 测试
 ```
@@ -171,24 +199,27 @@ tests/                  # 精简的公开契约与 Operator 测试
 
 ## 关键文档
 
-- [V7 Operator Plane](V7_OPERATOR_PLANE.md)：运营账本、租约、fencing、
+- [文档导航](docs/README.md)：当前规范、科学治理与历史基础的阅读顺序。
+- [V7 Operator Plane](docs/architecture/V7_OPERATOR_PLANE.md)：运营账本、租约、fencing、
   intake、reconcile 和权限边界。
-- [V6 Graph-native Recovery](V6_GRAPH_NATIVE_RECOVERY.md)：失败诊断、
+- [V7.1 Native Paper Delivery](docs/publication/V7_1_NATIVE_PAPER_DELIVERY.md)：原生成文、
+  证据账本、独立语义/版式复核和逐页 PDF 交付。
+- [V6 Graph-native Recovery](docs/architecture/V6_GRAPH_NATIVE_RECOVERY.md)：失败诊断、
   撤销闭包和 attempt lineage。
-- [V6.8 Capability Pack Factory](V6_8_CAPABILITY_PACK_FACTORY.md)：能力包
+- [V6.8 Capability Pack Factory](docs/capabilities/V6_8_CAPABILITY_PACK_FACTORY.md)：能力包
   manifest、typed IR 和输入绑定 verifier。
-- [V6.9 Development Portfolio Lane](V6_9_DEVELOPMENT_PORTFOLIO_LANE.md)：
+- [V6.9 Development Portfolio Lane](docs/architecture/V6_9_DEVELOPMENT_PORTFOLIO_LANE.md)：
   多骨架比较与弃权。
-- [V6.3 External Qualification](V6_3_EXTERNAL_QUALIFICATION.md)：外部预测、
+- [V6.3 External Qualification](docs/governance/V6_3_EXTERNAL_QUALIFICATION.md)：外部预测、
   私测、promotion 和独立信任边界。
-- [V6.1 Scientific Success Gate](V6_1_SCIENTIFIC_SUCCESS_GATE.md)：
+- [V6.1 Scientific Success Gate](docs/governance/V6_1_SCIENTIFIC_SUCCESS_GATE.md)：
   claim-relative 科学成功定义。
-- [V5 Graph-native Stage Workspace](V5_GRAPH_NATIVE_STAGE_WORKSPACE.md)：
+- [V5 Graph-native Stage Workspace](docs/architecture/V5_GRAPH_NATIVE_STAGE_WORKSPACE.md)：
   S0–S6 工作区和 Gate 协议。
-- [V5.6 Hybrid ODE](V5_6_HYBRID_ODE.md) 与
-  [V5.7 Adaptive Positive Series](V5_7_ADAPTIVE_POSITIVE_SERIES.md)：
+- [V5.6 Hybrid ODE](docs/capabilities/V5_6_HYBRID_ODE.md) 与
+  [V5.7 Adaptive Positive Series](docs/capabilities/V5_7_ADAPTIVE_POSITIVE_SERIES.md)：
   当前两个窄域建模方向。
-- [迁移说明](MIGRATION_README.md)：在新电脑重建开发环境。
+- [迁移说明](docs/MIGRATION.md)：在新电脑重建开发环境。
 
 ## 公开验证范围
 
