@@ -1,11 +1,10 @@
 # THIN documentation
 
-This repository maintains one architecture document:
+This repository maintains one current architecture document:
 
-- [THIN Modeling Agent](architecture/THIN_MODELING_AGENT.md) — the Native
-  Codex + Thin Sidecar path, retained structured-loop ablation, replay and
-  review contract, evaluation protocol, and current capability boundary.
-- [Friend Harness 4.0.1 vs THIN](architecture/FRIEND_V4_VS_THIN_20260731.md)
-  — the local source comparison that motivated the native-sidecar redesign.
+- [THIN Modeling Agent](architecture/THIN_MODELING_AGENT.md) — the single
+  Codex-native engine, authority-separated storage, source fidelity, claim
+  contracts, isolated replay, elastic research, evaluation protocol, and
+  current capability boundary.
 
 The repository [README](../README.md) contains installation and CLI examples.

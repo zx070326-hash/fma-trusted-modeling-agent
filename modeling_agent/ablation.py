@@ -1,4 +1,4 @@
-"""Frozen equal-budget ablation manifests for raw, thin, and native sidecar."""
+"""Frozen equal-budget component ablations for the single THIN engine."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .core import atomic_write_json, content_hash, now
+from .storage import atomic_write_json, content_hash, now
 
 
 def freeze_ablation(
@@ -40,24 +40,39 @@ def freeze_ablation(
                 "description": "One fresh model response; no harness loop or evidence promotion.",
             },
             {
-                "id": "thin_harness",
+                "id": "codex_web",
+                "description": "Raw Codex plus native public-web research; no source admission.",
+            },
+            {
+                "id": "source_gate",
                 "description": (
-                    "Open problem graph, local tools, fail-closed checks, and fresh review."
+                    "Codex web research plus exact-URL source review and frozen source records."
                 ),
             },
             {
-                "id": "native_sidecar",
+                "id": "hard_eval",
                 "description": (
-                    "Native project-local Codex research with a frozen task contract, "
-                    "deterministic replay, and one fresh final verifier."
+                    "Source Gate plus isolated replay, claim obligations, mechanical veto, "
+                    "and one fresh read-only verifier."
+                ),
+            },
+            {
+                "id": "elastic_memory",
+                "description": (
+                    "Full engine with working research memory and bounded on-demand branches."
                 ),
             },
         ],
         "frozen_outcomes": [
             "task_solution_quality",
             "simple_baseline_delta",
+            "source_entailment",
+            "critical_claim_coverage",
             "falsification_quality",
             "evidence_reproducibility",
+            "false_success_rate",
+            "correct_abstention_rate",
+            "route_change_quality",
             "recovery_after_rejection",
             "human_interventions",
             "wall_time_seconds",
@@ -68,6 +83,11 @@ def freeze_ablation(
             "Operational metrics may be computed by the harness. Scientific quality "
             "must be scored by a task-specific frozen grader or independent reviewer. "
             "A workflow-complete flag is not a quality score."
+        ),
+        "contamination_rule": (
+            "Primary evaluation tasks must remain private and unseen until contracts, "
+            "budgets, graders, stop rules, and network policies are frozen. Public-answer "
+            "retrieval invalidates a capability comparison."
         ),
     }
     manifest = {

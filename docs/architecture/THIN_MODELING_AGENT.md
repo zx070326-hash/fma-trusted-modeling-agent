@@ -1,141 +1,149 @@
-# Thin Modeling Agent
+# THIN Modeling Agent 0.4 架构
 
-`modeling_agent` 是本仓库唯一产品。目标不是证明流程完整，而是提高 Agent
-面对真实、未见建模问题时提出、证伪、修正和交付模型的能力。
+## 1. 目标函数
 
-## 第一性原理
+目标是解决开放、未见、真实的数学建模问题，并对“哪些结论可以提交和相信”保持保守；不是证明某套工作流被完整执行。
 
-真实建模至少包含四件不能相互替代的事：
+第一性原理分工：
 
-1. 自由提出问题分解、模型、反例和实验；
-2. 用计算或观察淘汰错误候选；
-3. 只把可复核结果提升为证据；
-4. 在证据不足时继续探索、换向或停止。
+- Codex 负责问题定义、表示选择、模型生成、搜索、代码、计算、试错、竞争路线和换向；
+- Harness 负责预算、任务本地权限、单写入者、耐久状态、来源绑定、机械否决、独立复核、Evidence 承认、撤销和停止；
+- 控制提交、证据和副作用，不限制模型的思考空间；
+- 生成者不能批准自己的 claim 或 final delivery；
+- 外部资格和现实行动始终由外部评审或人负责。
 
-因此，0.3 的默认链路只保留三类权威事实：
-
-- `contract`：目标、交付义务、声明边界和预算；
-- `execution`：原生研究尝试、生成器重放和检查结果；
-- `evidence`：有界声明、artifact 清单和独立复核 verdict。
-
-没有固定阶段队列，没有模型族白名单，也没有为每个状态增加证书、签名或版本目录。
-
-## 0.3 Native Sidecar：默认架构
+## 2. 单一生产循环
 
 ```mermaid
-flowchart LR
-    U["真实问题"] --> C["不可变 Task Contract"]
-    C --> R["Native Codex 研究循环"]
-    R <--> W["workspace-write 沙箱"]
-    R --> M["Submission Manifest"]
-    M --> D{"确定性准入"}
-    D -->|"缺件/越界"| R
-    D -->|"通过"| P["清洁重放生成器"]
-    P --> K["运行声明的 checks"]
-    K -->|"失败"| R
-    K -->|"通过"| V{"Fresh Verifier"}
-    V -->|"拒绝 + 具体反馈"| R
-    V -->|"locally_supported"| E["交付 + 有界证据"]
+flowchart TD
+    T["Frozen Task Contract"] --> E["ModelingEngine"]
+    E --> L["Lead Codex / :workspace"]
+    L -->|"按需"| B["Elastic branches"]
+    B --> K["W0 published summaries"]
+    K --> L
+    L --> M["Manifest v2 + paper/code/results"]
+    M --> SG["Source Gate"]
+    M --> RP["Declared-input replay + checks"]
+    SG --> FV["Fresh verifier"]
+    RP --> FV
+    FV -->|"all claims + delivery SUPPORTED"| ES["Evidence hash chain"]
+    FV -->|"otherwise"| L
+    ES --> P["Bounded verified delivery"]
 ```
 
-张弛边界如下：
+CLI 只有 `solve`、`status` 和 `eval`。S0–S6、永久 Planner/Scientist/Critic、模型族白名单、通用工作流引擎都不在生产语义中。
 
-| 放开 | 收紧 |
+## 3. 最小模块
+
+| 模块 | 职责 |
 |---|---|
-| 问题如何分解 | Codex 只在任务工作区内执行 |
-| 使用什么模型、数学表示、代码和算法 | 交付义务与声明边界在结果前冻结 |
-| 何时增加、修改或放弃分支 | 可复现声明必须列出生成器、输出和检查 |
-| 失败后补丁、重试或换方向 | 生成者不能批准自己的最终声明 |
+| `engine.py` | 单循环、恢复、临时分支、预算、Gate 编排、撤销和投影 |
+| `model.py` | Codex CLI、权限/网络模式、本地 Schema 复验和 trace receipt |
+| `research.py` | W0 工作记录、派生 Problem Graph、分支包与波次摘要 |
+| `sources.py` | source candidate、精确 URL trace、source→claim 复核记录 |
+| `verification.py` | Manifest、claim obligations、清洁重放、机械否决、fresh review |
+| `storage.py` | 安全路径、原子写、JSONL、单写入锁、Evidence 哈希链 |
+| `tools.py` | 有界文件工具、OS-sandboxed Python、机械检查 |
+| `ablation.py` | 冻结组件消融与 append-only 结果 |
 
-这是“控制提交、证据和副作用”，不是“控制 Agent 怎样思考”。
+权威事实只有：
 
-Sidecar 不观察或规定研究过程中的每一个状态。它只在 Codex 提交
-`submission_manifest.json` 后执行五个小关口：
+1. `work/research/records.jsonl`：模型可写的 W0 工作知识；
+2. `.modeling-agent/events.jsonl`：操作观察；
+3. `.modeling-agent/evidence.jsonl`：Harness 独占的 claim/revocation 链。
 
-1. 合同哈希、必需文件和相对路径合法；
-2. manifest 声明、artifact、生成器和检查结构完整；
-3. Python 生成器在受限清洁环境中成功重放；
-4. 声明的关键输出与重放输出逐字节一致，检查成功；
-5. 新 verifier 上下文只批准 artifact 实际支持的局部声明。
+Problem Graph、状态页和 delivery 都从这些事实与工件完整性派生，不另建可冲突的状态平面。
 
-任何失败都转成具体反馈，最多进入 `max_attempts` 次有界修复。预算耗尽时保留现有
-论文和 artifact，但状态明确为 `stopped` 或 `unverified`，不伪装成成功。
+## 4. 权限与执行边界
 
-## 0.2 Structured Loop：消融保留
+Lead 和 branch 的运行根分别是 `work/` 与独立 branch work。Codex CLI 使用自定义 `modeling-workspace-only` 权限配置：继承 `:workspace` 的写保护，同时设置 `:root=deny`、`:minimal=read` 并关闭临时目录访问。每个实际工作根在启动模型前必须通过两个真实命令 canary：工作根文件可读，父目录随机标记不可读。canary 内容泄露、允许访问失败或 sandbox helper 失效都会 fail closed。Fresh verifier 使用 `:read-only`、禁用 shell 工具，并且只接收完整有界 packet。
 
-旧 `run` 模式仍保留可修订 Problem Graph、`working`/`claim` 证据、逐步工具观察和
-节点撤销语义。它适合研究“显式结构化循环是否有增益”，但不再强加给默认建模链路。
-如果冻结消融不能证明它比 Native Sidecar 更好，就不继续为它增加组件。
+独立重放不在研究工作区原地运行。每个 generator 获得新的临时工作根，只复制：
 
-## 运行
+- Task Contract 与 Manifest；
+- 该 generator 脚本；
+- 显式 `input_paths`；
+- 已由前序 generator 生成且被显式声明为输入的输出。
 
-```powershell
-python -m modeling_agent native `
-  --workspace D:\runs\my-problem `
-  --objective "在这里给出完整的真实建模问题" `
-  --max-attempts 2 `
-  --max-seconds 1800
-```
+重放复用同一个 workspace-only profile 和双 canary，再通过 `codex sandbox` 启动 Python。没有可用 OS 沙箱、父目录仍可读或 canary 本身不能运行时 fail closed；AST 审计、`python -I` 和清洁环境只是纵深防御，不再被称为安全边界，也没有宿主 Python 回退。
 
-默认链路的源事实和轨迹只保存在：
+同一 run 由非阻塞 OS 文件锁保证单写入。Lead/branch 调用前后对 Harness 权威目录做快照；即使调用抛错，检测到的越权修改也会恢复并记录。
+
+当前宿主是否真的具备这些能力必须用现场 canary 验证。代码配置正确、单元测试通过或 CLI 存在，都不等于该机器的原生沙箱可用。
+
+## 5. 来源边界
+
+`research-search` 中的搜索摘要和模型记忆始终是 W0。最终 claim 引用的来源必须写成 candidate，并由 fresh Source Gate：
+
+- 对精确 URL 发起可观测 web query；
+- 绑定 exact locator、短摘录、source kind；
+- 明确 `supports_claim_ids` 与冲突；
+- 对 causal/mechanistic claim 至少要求一个 supported primary source；
+- 将每次复核保存为版本化、带哈希的记录。
+
+Source Gate 当前没有保存原始 HTTP 响应字节或 WARC，因此 E1 表示“可追踪的 fresh 模型来源复核”，不是长期网页归档或事实真理。精确 query、record hash 和独立 reviewer 提高保真，但不能消除网页变化、解析错误或 reviewer 判断错误。
+
+## 6. Claim 与 delivery 合同
+
+每个 claim 声明：
 
 ```text
-<workspace>/
-  .modeling-agent/task-contract.json
-  .modeling-agent/native-state.json
-  .modeling-agent/native-events.jsonl
-  submission_manifest.json
-  paper/final.md
+id, statement, claim_type, scope, dependencies,
+artifact_paths, source_ids, required_check_ids,
+baseline, falsifiers, decision_critical, requested_authority
 ```
 
-`--contract` 可在首次运行时覆盖默认合同。合同落盘后保持不可变，改变实验条件必须
-使用新工作区。停止的任务可以在同一工作区继续，历史尝试不删除。
+支持 `factual`、`computational`、`predictive`、`causal`、`mechanistic`、`decision`。规则限制什么可以被承认，不限制 Codex 可以提出什么。
 
-结构化对照模式仍可显式运行：
+Task Contract 用 `delivery_artifact` 指定唯一最终交付文档；Manifest 必须把它声明为 `paper`，并给出 `final_claim_ids`。Fresh verifier 对每个 claim 和整个 delivery 分别返回 verdict。所有 paper 工件必须完整进入总量有界的 review packet；无法完整装入或格式不可读时返回 `NOT_RUN`。只要任一 claim、依赖或 delivery 不是 `SUPPORTED`，本轮不写 Evidence。W0 不能进入 Evidence；每个 claim 的 authority 由 requested、claim review、overall review 和依赖的最弱 authority 共同封顶，E5 永不由本 Harness 授予。
 
-```powershell
-python -m modeling_agent run `
-  --workspace D:\runs\structured-control `
-  --objective "同一个冻结问题" `
-  --max-steps 12 `
-  --max-tool-calls 30 `
-  --max-seconds 1800
-```
+Verifier packet 中的论文、代码、来源和 metadata 都被明确标记为不可信数据，不能成为 evaluator 指令。Verifier receipt 必须表明 fresh role、read-only、tool-free、ephemeral、offline delivery，并绑定 trace hash。
 
-## 三臂消融
+## 7. Provenance、撤销与恢复
 
-先冻结同一问题、模型和预算：
+每条 admitted claim 保留：
 
-```powershell
-python -m modeling_agent ablation-init `
-  --output D:\runs\experiment\ablation.json `
-  --objective "未见任务原文"
-```
+- 完整 artifact inventory：输入、generator、check、结果、论文、Manifest；
+- Task Contract、source trace 和 fresh-verifier trace；
+- source record 路径、hash 与 snapshot hash；
+- mechanical replay/check 事实；
+- verifier review、receipt 与 receipt hash；
+- contract/manifest hash、final answer 与 final claim IDs；
+- dependency 与 authority。
 
-三个实验臂分别为：
+Evidence 是带 `sequence`、`previous_record_hash` 和 `record_hash` 的有序 JSONL 链，run state 保存 count/head 锚。编辑、删除、截断或重排报告 `corrupt`。任何 reviewed artifact、source、合同或复核 trace 变化使 claim 及其下游依赖变为 `stale`；恢复时追加 revocation，旧 delivery 立即降为 `revoked/W0`，再由新尝试重新资格化。
 
-1. `raw_codex`：一次原生回答；
-2. `thin_harness`：0.2 的结构化 Problem Graph 循环；
-3. `native_sidecar`：0.3 的原生研究循环加最小重放和复核。
+W0 研究记录损坏只会产生 Problem Graph 投影诊断，不会改变已承认 Evidence。
 
-必须在看结果前冻结任务、预算、评分规则、简单基线和独立评分者。工作流完成率
-不是建模质量；主要比较答案质量、相对基线增益、证伪质量、复现性、失败恢复、
-人工干预和成本。
+## 8. 预算与并行
 
-## 当前能力边界
+`max_attempts`、累计 wall time、累计 branch 数和 wave 数保存在 run state。每个 Lead、branch、source reviewer、replay、check 和 verifier 都只获得剩余 wall budget；截止时间之后返回的结果不能入证。
 
-- Native 研究循环依赖 Codex `workspace-write` 沙箱；Windows 嵌套运行显式使用
-  `unelevated` 受限 token 回退，Sidecar 再做路径检查；
-- 单次原生研究循环的工具调用数目前只能事后观测，不能由 Sidecar 中途硬截断；
-- 只有 manifest 声明的 Python 生成器获得逐字节重放保证；
-- “独立复核”是新的模型上下文，不等于外部科学同行评议；
-- 通用机械检查只能证明 artifact 的有限性质，不能自动证明机制、因果或外推；
-- 当前实现证明了合同、重放、修复和复核语义，尚未证明它优于裸 Codex；
-- 默认关闭联网、插件、浏览器、依赖安装和任务目录外写入，也不授权现实世界行动。
+恢复默认继承冻结预算。扩大预算必须显式 `--amend-budget`，只允许非递减修改并写事件。模型标识在一个 run 内冻结。外部调用前先持久化 active attempt；若进程在下一检查点前中断，恢复时会消耗该 attempt，并按已过时间、至多其冻结调用预算计入累计 wall time。
 
-## 增长规则
+并行只用于有信息价值的临时竞争路线。分支不共享实时可写内存，只在波次结束后发布 W0 摘要；一个分支失败不会删除其他路线。
 
-只有当未见任务消融显示稳定缺口时才增加组件。优先改提示、工具可读性和评分
-协议；只有重复出现且无法由现有机制表达的问题，才进入内核。新增后必须再次
-比较“裸模型 / 结构化 THIN / Native Sidecar”，不能用更多代码或更多内部测试
-代替能力提升。
+当前 0.4 尚未把 token/cost/tool-call 总量接入 `solve` 的硬预算；`eval` 中的这些字段属于冻结实验合同，而不是已实现的运行时配额。
+
+## 9. 明确不建设
+
+- 固定 S0–S6 流水线；
+- 永久角色群；
+- 模型族白名单或 Method Pack Registry；
+- 通用 Workflow Engine；
+- Neo4j、向量数据库或 Graph UI；
+- Agent 间实时共享可写内存；
+- Lease、Receipt 证书栈或重复状态平面。
+
+## 10. 资格边界
+
+单元测试证明代码语义，不证明 Agent 优于裸 Codex。真实能力必须在冻结私有未见任务上比较：盲评建模质量、来源蕴含、复现率、错误成功率、正确弃权、换向质量、成本和人工介入。
+
+在当前主机上，还必须分别通过：
+
+1. Codex CLI 模型目录与身份启动；
+2. `:workspace` 父目录 secret canary；
+3. `codex sandbox -P :workspace` 写逃逸与断网 canary；
+4. 一次全新的端到端资格任务。
+
+任何一项未运行或失败，都必须报告为宿主/资格缺口，不能由内部测试替代。

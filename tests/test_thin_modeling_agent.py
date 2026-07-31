@@ -1,1142 +1,92 @@
 from __future__ import annotations
 
 import json
+import time
+from collections import deque
 from pathlib import Path
 
 import pytest
 
+import modeling_agent.tools as tools_module
 from modeling_agent.ablation import freeze_ablation, record_result
-from modeling_agent.core import (
-    StateStore,
+from modeling_agent.engine import ModelingEngine, run_status
+from modeling_agent.model import ScriptedModel
+from modeling_agent.research import ResearchStore
+from modeling_agent.sources import SourceGate
+from modeling_agent.storage import (
+    RunLayout,
+    RunStore,
+    atomic_write_json,
     content_hash,
-    delivery_projection,
     file_hash,
-    new_state,
-    node_states,
-    state_planes,
-    upsert_nodes,
+    run_lock,
+    safe_path,
 )
-from modeling_agent.loop import ModelingLoop
-from modeling_agent.model import ACTION_SCHEMA, ScriptedModel
-from modeling_agent.sidecar import (
-    NativeSidecar,
-    default_contract,
-    native_status,
-    validate_contract,
-)
-from modeling_agent.tools import ToolRegistry, run_check
+from modeling_agent.tools import ToolRegistry
+from modeling_agent.verification import default_contract, validate_contract, validate_manifest
 
 
-def _action(
+@pytest.fixture(autouse=True)
+def _direct_python_is_a_unit_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        tools_module,
+        "_python_command",
+        lambda workspace, command: (command, "unit-test-fixture"),
+    )
+
+
+def _supported_review(claim_id: str = "computed-value") -> dict[str, object]:
+    return {
+        "verdict": "SUPPORTED",
+        "claim_verdicts": [
+            {
+                "claim_id": claim_id,
+                "verdict": "SUPPORTED",
+                "max_authority": "E4",
+                "findings": [],
+            }
+        ],
+        "findings": [],
+        "max_authority": "E4",
+        "delivery_verdict": "SUPPORTED",
+        "delivery_findings": [],
+    }
+
+
+def _two_claim_review(
     *,
-    summary: str = "work",
-    upsert_nodes: list[dict[str, object]] | None = None,
-    tool_calls: list[dict[str, object]] | None = None,
-    candidate_claims: list[dict[str, object]] | None = None,
-    final: dict[str, object] | None = None,
+    first_authority: str = "E4",
+    second_authority: str = "E4",
+    second_verdict: str = "SUPPORTED",
+    overall_authority: str = "E4",
 ) -> dict[str, object]:
     return {
-        "summary": summary,
-        "upsert_nodes": upsert_nodes or [],
-        "focus_node": "root",
-        "tool_calls": tool_calls or [],
-        "candidate_claims": candidate_claims or [],
-        "final": final,
-    }
-
-
-def _approve() -> dict[str, object]:
-    return {
-        "verdict": "APPROVE",
+        "verdict": "SUPPORTED",
+        "claim_verdicts": [
+            {
+                "claim_id": "computed-value",
+                "verdict": "SUPPORTED",
+                "max_authority": first_authority,
+                "findings": [],
+            },
+            {
+                "claim_id": "derived-value",
+                "verdict": second_verdict,
+                "max_authority": second_authority,
+                "findings": [] if second_verdict == "SUPPORTED" else ["not supported"],
+            },
+        ],
         "findings": [],
-        "claim_strength": "locally_supported",
+        "max_authority": overall_authority,
+        "delivery_verdict": "SUPPORTED",
+        "delivery_findings": [],
     }
 
 
-def _write_json(value: int) -> dict[str, object]:
-    return {
-        "call_id": "write-result",
-        "name": "write_text",
-        "arguments_json": json.dumps(
-            {"path": "artifacts/result.json", "content": json.dumps({"value": value})}
-        ),
-    }
-
-
-def _claim(value: int) -> dict[str, object]:
-    return {
-        "id": "e-result",
-        "node_id": "root",
-        "statement": f"The computed value is {value}.",
-        "artifact": "artifacts/result.json",
-        "supporting_artifacts": [],
-        "checks": [
-            {
-                "kind": "numeric_assertion",
-                "arguments_json": json.dumps(
-                    {
-                        "path": "artifacts/result.json",
-                        "field": "value",
-                        "operator": "==",
-                        "value": value,
-                        "tolerance": 0,
-                    }
-                ),
-            }
-        ],
-    }
-
-
-def test_problem_graph_is_open_and_revisions_revoke_downstream() -> None:
-    state = new_state(
-        "Estimate a coupled nonlinear system.",
-        max_steps=4,
-        max_tool_calls=8,
-        max_seconds=60,
-    )
-    upsert_nodes(
-        state,
-        [
-            {
-                "id": "mechanism",
-                "question": "Which mechanism is identifiable?",
-                "depends_on": [],
-            },
-            {
-                "id": "forecast",
-                "question": "Does the selected mechanism forecast?",
-                "depends_on": ["mechanism"],
-            },
-        ],
-    )
-    state["evidence"]["e-mechanism"] = {
-        "id": "e-mechanism",
-        "node_id": "mechanism",
-        "status": "verified",
-    }
-    state["evidence"]["e-forecast"] = {
-        "id": "e-forecast",
-        "node_id": "forecast",
-        "status": "verified",
-    }
-
-    upsert_nodes(
-        state,
-        [
-            {
-                "id": "mechanism",
-                "question": "Which mechanism survives the new diagnostic?",
-                "depends_on": [],
-            }
-        ],
-    )
-
-    assert node_states(state)["mechanism"] == "open"
-    assert node_states(state)["forecast"] == "blocked"
-    assert state["evidence"]["e-mechanism"]["status"] == "revoked"
-    assert state["evidence"]["e-forecast"]["status"] == "revoked"
-
-    with pytest.raises(ValueError, match="cycle"):
-        upsert_nodes(
-            state,
-            [
-                {"id": "a", "question": "a?", "depends_on": ["b"]},
-                {"id": "b", "question": "b?", "depends_on": ["a"]},
-            ],
-        )
-
-
-def test_three_planes_project_support_without_duplicate_workflow_state() -> None:
-    state = new_state(
-        "Test a falsifiable hypothesis.",
-        max_steps=3,
-        max_tool_calls=4,
-        max_seconds=60,
-    )
-
-    before = state_planes(state)
-    assert set(before) == {"research", "execution", "evidence"}
-    assert before["research"]["nodes"]["root"]["support"] == "open"
-    assert "state" not in state["nodes"]["root"]
-    assert "attempts" not in state["nodes"]["root"]
-    assert "delivery" not in state
-
-    state["evidence"]["e-root"] = {
-        "id": "e-root",
-        "node_id": "root",
-        "status": "verified",
-    }
-
-    after = state_planes(state)
-    assert after["research"]["nodes"]["root"]["support"] == "supported"
-    assert after["evidence"]["counts"]["verified"] == 1
-
-
-def test_legacy_projection_caches_migrate_to_source_facts(tmp_path: Path) -> None:
-    state = new_state(
-        "Resume an older thin run.",
-        max_steps=3,
-        max_tool_calls=4,
-        max_seconds=60,
-    )
-    state["nodes"]["root"]["state"] = "supported"
-    state["nodes"]["root"]["attempts"] = 2
-    state["delivery"] = {
-        "answer": "An older exploratory answer.",
-        "evidence_ids": [],
-        "limitations": ["It was not qualified."],
-        "captured_at": "2026-01-01T00:00:00+00:00",
-        "qualification_error": "legacy qualification failed",
-    }
-    store = StateStore(tmp_path)
-    store.initialize(state)
-
-    loaded = store.load()
-
-    assert "state" not in loaded["nodes"]["root"]
-    assert "attempts" not in loaded["nodes"]["root"]
-    assert "delivery" not in loaded
-    assert node_states(loaded)["root"] == "open"
-    assert delivery_projection(loaded)["qualification_error"] == (
-        "legacy qualification failed"
-    )
-
-
-def test_legacy_evidence_without_admission_keeps_claim_semantics(
-    tmp_path: Path,
-) -> None:
-    state = new_state(
-        "Load evidence written before selective review existed.",
-        max_steps=3,
-        max_tool_calls=4,
-        max_seconds=60,
-    )
-    state["evidence"]["legacy-result"] = {
-        "id": "legacy-result",
-        "node_id": "root",
-        "status": "verified",
-    }
-    store = StateStore(tmp_path)
-    store.initialize(state)
-
-    loaded = store.load()
-
-    assert loaded["evidence"]["legacy-result"]["admission"] == "claim"
-
-
-def test_one_step_run_promotes_checked_independently_reviewed_evidence(
-    tmp_path: Path,
-) -> None:
-    modeler = ScriptedModel(
-        [
-            _action(
-                summary="Compute a directly checkable result.",
-                tool_calls=[_write_json(4)],
-                candidate_claims=[_claim(4)],
-                final={
-                    "answer": "The answer is 4.",
-                    "evidence_ids": ["e-result"],
-                    "limitations": ["This establishes only the stated finite computation."],
-                },
-            )
-        ]
-    )
-    verifier = ScriptedModel([_approve(), _approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=1,
-    ).run("Compute 2 + 2 and support the answer with an artifact.")
-
-    assert result.status == "completed"
-    assert node_states(result.state)["root"] == "supported"
-    assert result.state["evidence"]["e-result"]["status"] == "verified"
-    assert "state" not in result.state["nodes"]["root"]
-    assert "delivery" not in result.state
-    assert delivery_projection(result.state, tmp_path)["status"] == "verified"
-    assert (tmp_path / "paper" / "final.md").is_file()
-    assert len(verifier.calls) == 2
-    trace = (tmp_path / ".modeling-agent" / "trace.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert "tool.result" in trace
-    assert "evidence.result" in trace
-    assert "run.completed" in trace
-
-    (tmp_path / "artifacts" / "result.json").write_text(
-        '{"value": 5}', encoding="utf-8"
-    )
-    stale = delivery_projection(result.state, tmp_path)
-    assert stale["status"] == "best_effort_unverified"
-    assert stale["evidence_integrity"]["e-result"] == "stale"
-    assert result.state["evidence"]["e-result"]["status"] == "verified"
-
-
-def test_empty_checks_never_reach_the_verifier(tmp_path: Path) -> None:
-    claim = _claim(4)
-    claim["checks"] = []
-    modeler = ScriptedModel(
-        [
-            _action(
-                tool_calls=[_write_json(4)],
-                candidate_claims=[claim],
-            )
-        ]
-    )
-    verifier = ScriptedModel([])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=1,
-    ).run("Make an unsupported claim.")
-
-    assert result.status == "stopped"
-    assert result.state["evidence"]["e-result"]["status"] == "rejected"
-    assert "requires at least one check" in result.state["evidence"]["e-result"]["error"]
-    assert verifier.calls == []
-
-
-def test_failed_attempt_can_change_direction_and_recover(tmp_path: Path) -> None:
-    first_claim = _claim(5)
-    first_claim["checks"] = [
-        {
-            "kind": "numeric_assertion",
-            "arguments_json": json.dumps(
-                {
-                    "path": "artifacts/result.json",
-                    "field": "value",
-                    "operator": "==",
-                    "value": 5,
-                    "tolerance": 0,
-                }
-            ),
-        }
-    ]
-    modeler = ScriptedModel(
-        [
-            _action(
-                summary="First hypothesis fails its own check.",
-                tool_calls=[_write_json(4)],
-                candidate_claims=[first_claim],
-            ),
-            _action(
-                summary="Revise the claim instead of forcing the first answer.",
-                candidate_claims=[_claim(4)],
-                final={
-                    "answer": "The corrected result is 4.",
-                    "evidence_ids": ["e-result"],
-                    "limitations": [],
-                },
-            ),
-        ]
-    )
-    verifier = ScriptedModel([_approve(), _approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=2,
-    ).run("Compute a checked result and recover from a failed hypothesis.")
-
-    assert result.status == "completed"
-    assert "attempts" not in result.state["nodes"]["root"]
-    assert result.state["evidence"]["e-result"]["revision"] == 2
-    assert result.state["evidence"]["e-result"]["status"] == "verified"
-
-
-def test_working_candidate_defers_review_and_reaches_next_context(
-    tmp_path: Path,
-) -> None:
-    working = _claim(4)
-    working["admission"] = "working"
-    modeler = ScriptedModel(
-        [
-            _action(
-                summary="Keep a checked intermediate result without blocking.",
-                tool_calls=[_write_json(4)],
-                candidate_claims=[working],
-            ),
-            _action(summary="Use the working result to choose the next experiment."),
-        ]
-    )
-    verifier = ScriptedModel([])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=2,
-    ).run("Explore a checked result before deciding whether it supports a claim.")
-
-    record = result.state["evidence"]["e-result"]
-    assert result.status == "stopped"
-    assert record["status"] == "candidate"
-    assert record["admission"] == "working"
-    assert record["review_deferred"] is True
-    assert verifier.calls == []
-    assert state_planes(result.state)["evidence"]["working_candidates"] == 1
-    second_prompt = modeler.calls[1]["prompt"]
-    assert '"admission": "working"' in second_prompt
-    assert '"usable_for_exploration": true' in second_prompt
-    assert '"admitted_for_claim": false' in second_prompt
-    trace = (tmp_path / ".modeling-agent" / "trace.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert '"review_requested":false' in trace
-
-
-def test_action_schema_requires_explicit_admission() -> None:
-    candidate_schema = ACTION_SCHEMA["properties"]["candidate_claims"]["items"]
-
-    assert "admission" in candidate_schema["required"]
-    assert candidate_schema["properties"]["admission"]["enum"] == [
-        "working",
-        "claim",
-    ]
-
-
-def test_working_candidate_is_reviewed_only_when_promoted_to_claim(
-    tmp_path: Path,
-) -> None:
-    working = _claim(4)
-    working["admission"] = "working"
-    promoted = _claim(4)
-    promoted["admission"] = "claim"
-    modeler = ScriptedModel(
-        [
-            _action(
-                summary="Record a checked working result.",
-                tool_calls=[_write_json(4)],
-                candidate_claims=[working],
-            ),
-            _action(
-                summary="Promote the decision-critical result.",
-                candidate_claims=[promoted],
-                final={
-                    "answer": "The promoted answer is 4.",
-                    "evidence_ids": ["e-result"],
-                    "limitations": ["This establishes only the local computation."],
-                },
-            ),
-        ]
-    )
-    verifier = ScriptedModel([_approve(), _approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=2,
-    ).run("Explore first, then qualify only the decision-critical result.")
-
-    record = result.state["evidence"]["e-result"]
-    assert result.status == "completed"
-    assert record["status"] == "verified"
-    assert record["admission"] == "claim"
-    assert record["revision"] == 2
-    assert len(verifier.calls) == 2
-    assert '"admission": "claim"' in verifier.calls[0]["prompt"]
-
-
-def test_invalid_admission_fails_before_independent_review(tmp_path: Path) -> None:
-    claim = _claim(4)
-    claim["admission"] = "automatic"
-    verifier = ScriptedModel([])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=ScriptedModel(
-            [
-                _action(
-                    tool_calls=[_write_json(4)],
-                    candidate_claims=[claim],
-                )
-            ]
-        ),
-        verifier=verifier,
-        max_steps=1,
-    ).run("Reject an undefined evidence admission level.")
-
-    record = result.state["evidence"]["e-result"]
-    assert record["status"] == "rejected"
-    assert record["admission"] == "claim"
-    assert record["requested_admission"] == "automatic"
-    assert "invalid evidence admission" in record["error"]
-    assert verifier.calls == []
-
-
-def test_problem_revision_revokes_working_candidate() -> None:
-    state = new_state(
-        "Test a provisional mechanism.",
-        max_steps=3,
-        max_tool_calls=4,
-        max_seconds=60,
-    )
-    state["evidence"]["working-mechanism"] = {
-        "id": "working-mechanism",
-        "node_id": "root",
-        "statement": "The provisional mechanism fits the current question.",
-        "artifact": "artifacts/mechanism.json",
-        "status": "candidate",
-        "admission": "working",
-    }
-
-    upsert_nodes(
-        state,
-        [
-            {
-                "id": "root",
-                "question": "Test a materially revised mechanism.",
-                "depends_on": [],
-                "priority": 1.0,
-            }
-        ],
-    )
-
-    record = state["evidence"]["working-mechanism"]
-    assert record["status"] == "revoked"
-    assert record["revocation_reason"] == "problem graph dependency changed"
-
-
-def test_tool_calls_always_return_structured_results(tmp_path: Path) -> None:
-    tools = ToolRegistry(tmp_path)
-
-    malformed = tools.execute("write_text", {"path": "artifacts/a.txt"})
-    unknown = tools.execute("delete_everything", {})
-
-    assert malformed["status"] == "error"
-    assert malformed["error_type"] == "ValueError"
-    assert unknown["status"] == "error"
-    assert unknown["error_type"] == "unknown_tool"
-
-
-def test_write_files_batches_related_files_after_full_validation(
-    tmp_path: Path,
-) -> None:
-    tools = ToolRegistry(tmp_path)
-
-    result = tools.execute(
-        "write_files",
-        {
-            "files": [
-                {"path": "src/model.py", "content": "print('model')\n"},
-                {"path": "checks/check_model.py", "content": "assert True\n"},
-            ]
-        },
-    )
-
-    assert result["status"] == "success"
-    assert len(result["data"]["files"]) == 2
-    assert (tmp_path / "src" / "model.py").is_file()
-    assert (tmp_path / "checks" / "check_model.py").is_file()
-
-
-def test_read_files_batches_related_inputs_with_total_bound(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
-    (tmp_path / "b.txt").write_text("beta", encoding="utf-8")
-    tools = ToolRegistry(tmp_path)
-
-    result = tools.execute(
-        "read_files",
-        {"paths": ["a.txt", "b.txt"], "max_chars": 20_000},
-    )
-
-    assert result["status"] == "success"
-    assert [item["content"] for item in result["data"]["files"]] == [
-        "alpha",
-        "beta",
-    ]
-    assert result["data"]["total_chars"] == 9
-
-
-def test_standard_root_submission_is_writable_but_inputs_are_not(
-    tmp_path: Path,
-) -> None:
-    tools = ToolRegistry(tmp_path)
-
-    delivery = tools.execute(
-        "write_text", {"path": "submission.json", "content": "{}\n"}
-    )
-    input_overwrite = tools.execute(
-        "write_text", {"path": "task.md", "content": "changed\n"}
-    )
-
-    assert delivery["status"] == "success"
-    assert input_overwrite["status"] == "error"
-    assert (tmp_path / "submission.json").is_file()
-    assert not (tmp_path / "task.md").exists()
-
-
-def test_context_keeps_moderate_batched_observation_intact(tmp_path: Path) -> None:
-    loop = ModelingLoop(
-        tmp_path,
-        modeler=ScriptedModel([]),
-        verifier=ScriptedModel([]),
-    )
-    state = new_state(
-        "objective",
-        max_steps=12,
-        max_tool_calls=30,
-        max_seconds=1800,
-    )
-    content = "x" * 15_000
-    state["observations"].append(
-        {
-            "kind": "tool.result",
-            "result": {"status": "success", "data": {"content": content}},
-        }
-    )
-
-    observation = loop._context(state)["recent_observations"][0]
-
-    assert observation["result"]["data"]["content"] == content
-    assert "truncated" not in observation
-
-
-def test_context_marks_changed_verified_evidence_stale(tmp_path: Path) -> None:
-    artifact = tmp_path / "results" / "value.json"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text('{"value": 1}\n', encoding="utf-8")
-    loop = ModelingLoop(
-        tmp_path,
-        modeler=ScriptedModel([]),
-        verifier=ScriptedModel([]),
-    )
-    state = new_state(
-        "objective",
-        max_steps=12,
-        max_tool_calls=30,
-        max_seconds=1800,
-    )
-    state["evidence"]["value_v1"] = {
-        "id": "value_v1",
-        "node_id": "root",
-        "statement": "value is one",
-        "artifact": "results/value.json",
-        "artifact_sha256": "not-the-current-hash",
-        "supporting_artifacts": [],
-        "checks": [],
-        "status": "verified",
-        "review": {"verdict": "APPROVE"},
-    }
-
-    context = loop._context(state)
-
-    assert context["evidence"]["value_v1"]["integrity"] == "stale"
-
-
-def test_stale_working_evidence_is_not_usable_for_exploration(
-    tmp_path: Path,
-) -> None:
-    artifact = tmp_path / "results" / "working.json"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text('{"value": 1}\n', encoding="utf-8")
-    loop = ModelingLoop(
-        tmp_path,
-        modeler=ScriptedModel([]),
-        verifier=ScriptedModel([]),
-    )
-    state = new_state(
-        "Use current working results but reject stale ones.",
-        max_steps=3,
-        max_tool_calls=4,
-        max_seconds=60,
-    )
-    state["evidence"]["working-result"] = {
-        "id": "working-result",
-        "node_id": "root",
-        "statement": "The provisional value is one.",
-        "artifact": "results/working.json",
-        "artifact_sha256": file_hash(artifact),
-        "supporting_artifacts": [],
-        "checks": [],
-        "status": "candidate",
-        "admission": "working",
-    }
-
-    current = loop._context(state)["evidence"]["working-result"]
-    artifact.write_text('{"value": 2}\n', encoding="utf-8")
-    stale = loop._context(state)["evidence"]["working-result"]
-
-    assert current["usable_for_exploration"] is True
-    assert current["admitted_for_claim"] is False
-    assert stale["integrity"] == "stale"
-    assert stale["usable_for_exploration"] is False
-
-
-def test_python_compute_denies_obvious_network_code(tmp_path: Path) -> None:
-    tools = ToolRegistry(tmp_path)
-    write = tools.execute(
-        "write_text",
-        {"path": "src/network.py", "content": "import socket\nprint('no')\n"},
-    )
-    assert write["status"] == "success"
-
-    run = tools.execute(
-        "python_compute",
-        {"script": "src/network.py", "timeout": 5},
-    )
-    assert run["status"] == "denied"
-    assert run["error_type"] == "permission_denied"
-
-
-def test_malformed_mechanical_check_fails_closed(tmp_path: Path) -> None:
-    (tmp_path / "artifacts").mkdir()
-    (tmp_path / "artifacts" / "value.json").write_text(
-        '{"value": 4}\n', encoding="utf-8"
-    )
-
-    result = run_check(
-        tmp_path,
-        "numeric_assertion",
-        {
-            "path": "artifacts/value.json",
-            "operator": "==",
-            "value": 4,
-        },
-    )
-
-    assert result["ok"] is False
-    assert result["actual"] is None
-    json.dumps(result, allow_nan=False)
-
-
-def test_ablation_contract_is_frozen_and_results_are_append_only(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "ablation.json"
-    manifest = freeze_ablation(
-        path,
-        objective="An unseen modeling problem.",
-        model="gpt-5.6-sol",
-        max_model_turns=8,
-        max_tool_calls=24,
-        max_wall_seconds=900,
-    )
-
-    assert [arm["id"] for arm in manifest["arms"]] == [
-        "raw_codex",
-        "thin_harness",
-        "native_sidecar",
-    ]
-    assert manifest["schema"] == 2
-    assert manifest["results"] == {}
-    with pytest.raises(FileExistsError):
-        freeze_ablation(
-            path,
-            objective="Do not overwrite.",
-            model="gpt-5.6-sol",
-            max_model_turns=8,
-            max_tool_calls=24,
-            max_wall_seconds=900,
-        )
-
-    record_result(
-        path,
-        "thin_harness",
-        {"status": "completed", "artifact": "result.json"},
-    )
-    with pytest.raises(ValueError, match="already recorded"):
-        record_result(
-            path,
-            "thin_harness",
-            {"status": "changed"},
-        )
-
-
-def test_stopped_run_can_resume_with_a_larger_budget(tmp_path: Path) -> None:
-    first = ScriptedModel([_action(summary="Need another step.")])
-    stopped = ModelingLoop(
-        workspace=tmp_path,
-        modeler=first,
-        verifier=ScriptedModel([]),
-        max_steps=1,
-    ).run("Use two attempts.")
-    assert stopped.status == "stopped"
-
-    resumed = ModelingLoop(
-        workspace=tmp_path,
-        modeler=ScriptedModel(
-            [
-                _action(
-                    tool_calls=[_write_json(4)],
-                    candidate_claims=[_claim(4)],
-                    final={
-                        "answer": "Recovered.",
-                        "evidence_ids": ["e-result"],
-                        "limitations": [],
-                    },
-                )
-            ]
-        ),
-        verifier=ScriptedModel([_approve(), _approve()]),
-        max_steps=2,
-    ).run("Use two attempts.")
-
-    assert resumed.status == "completed"
-    state = StateStore(tmp_path).load()
-    assert state["budgets"]["max_steps"] == 2
-
-
-def test_one_turn_can_compute_and_send_complete_bundle_to_reviewer(
-    tmp_path: Path,
-) -> None:
-    compute_source = (
-        "import json\n"
-        "from pathlib import Path\n"
-        "Path('artifacts/result.json').parent.mkdir(exist_ok=True)\n"
-        "Path('artifacts/result.json').write_text("
-        "json.dumps({'value': 4}), encoding='utf-8')\n"
-    )
-    check_source = (
-        "import json\n"
-        "from pathlib import Path\n"
-        "value = json.loads(Path('artifacts/result.json').read_text("
-        "encoding='utf-8'))['value']\n"
-        "assert value == 4\n"
-    )
-    tool_calls = [
-        {
-            "call_id": "write-compute",
-            "name": "write_text",
-            "arguments_json": json.dumps(
-                {"path": "src/compute.py", "content": compute_source}
-            ),
-        },
-        {
-            "call_id": "write-check",
-            "name": "write_text",
-            "arguments_json": json.dumps(
-                {"path": "checks/check_result.py", "content": check_source}
-            ),
-        },
-        {
-            "call_id": "run-compute",
-            "name": "python_compute",
-            "arguments_json": json.dumps(
-                {
-                    "script": "src/compute.py",
-                    "args": [],
-                    "timeout": 10,
-                    "expected_outputs": ["artifacts/result.json"],
-                }
-            ),
-        },
-    ]
-    claim = {
-        "id": "e-computed",
-        "node_id": "root",
-        "statement": "The executable computation returns 4.",
-        "artifact": "artifacts/result.json",
-        "supporting_artifacts": ["src/compute.py"],
-        "checks": [
-            {
-                "kind": "python_check",
-                "arguments_json": json.dumps(
-                    {"script": "checks/check_result.py"}
-                ),
-            }
-        ],
-    }
-    modeler = ScriptedModel(
-        [
-            _action(
-                tool_calls=tool_calls,
-                candidate_claims=[claim],
-                final={
-                    "answer": "The checked computation returns 4.",
-                    "evidence_ids": ["e-computed"],
-                    "limitations": ["This is a finite local computation."],
-                },
-            )
-        ]
-    )
-    verifier = ScriptedModel([_approve(), _approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=1,
-    ).run("Compute and independently check 2 + 2.")
-
-    assert result.status == "completed"
-    assert result.state["tool_calls"] == 3
-    assert len(modeler.calls) == 1
-    candidate_prompt = verifier.calls[0]["prompt"]
-    assert "src/compute.py" in candidate_prompt
-    assert "Path('artifacts/result.json')" in candidate_prompt
-    assert "checks/check_result.py" in candidate_prompt
-    assert "assert value == 4" in candidate_prompt
-    final_prompt = verifier.calls[1]["prompt"]
-    assert "src/compute.py" in final_prompt
-    assert "checks/check_result.py" in final_prompt
-
-
-def test_last_turn_requires_and_preserves_best_effort_delivery(
-    tmp_path: Path,
-) -> None:
-    modeler = ScriptedModel(
-        [
-            _action(
-                summary="Deliver what is known without claiming qualification.",
-                final={
-                    "answer": "A plausible answer exists, but it is not verified.",
-                    "evidence_ids": [],
-                    "limitations": ["No candidate evidence passed qualification."],
-                },
-            )
-        ]
-    )
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=ScriptedModel([]),
-        max_steps=1,
-    ).run("Attempt a difficult problem under a one-turn budget.")
-
-    assert result.status == "stopped"
-    assert result.reason == "step_budget_reached_with_best_effort_delivery"
-    assert result.state["final"] is None
-    delivery = delivery_projection(result.state, tmp_path)
-    assert delivery["status"] == "best_effort_unverified"
-    assert delivery["claim_ceiling"] == "exploratory"
-    assert "root problem and its declared prerequisites are not supported" in delivery[
-        "qualification_error"
-    ]
-    call = modeler.calls[0]
-    assert call["schema"]["properties"]["final"]["type"] == "object"
-    assert "BUDGET PRESSURE" in call["prompt"]
-    assert "advisory, not a stage gate" in call["prompt"]
-    assert "FINAL RESERVED TURN" in call["prompt"]
-
-
-def test_changed_artifact_blocks_qualification_but_keeps_delivery(
-    tmp_path: Path,
-) -> None:
-    modeler = ScriptedModel(
-        [
-            _action(
-                tool_calls=[_write_json(4)],
-                candidate_claims=[_claim(4)],
-            ),
-            _action(
-                tool_calls=[_write_json(5)],
-                final={
-                    "answer": "The answer is 4.",
-                    "evidence_ids": ["e-result"],
-                    "limitations": [],
-                },
-            ),
-        ]
-    )
-    verifier = ScriptedModel([_approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=2,
-    ).run("Do not qualify a result after its artifact changes.")
-
-    assert result.status == "stopped"
-    delivery = delivery_projection(result.state, tmp_path)
-    assert delivery["status"] == "best_effort_unverified"
-    assert "changed after review" in delivery["qualification_error"]
-    assert "best_effort_unverified" in (
-        tmp_path / "paper" / "final.md"
-    ).read_text(encoding="utf-8")
-    assert len(verifier.calls) == 1
-
-
-def test_declared_compute_outputs_get_safe_parent_directories(
-    tmp_path: Path,
-) -> None:
-    tools = ToolRegistry(tmp_path)
-    source = (
-        "from pathlib import Path\n"
-        "Path('results/nested/value.json').write_text("
-        "'{\\\"value\\\": 4}', encoding='utf-8')\n"
-    )
-    assert tools.execute(
-        "write_text", {"path": "src/generate.py", "content": source}
-    )["status"] == "success"
-
-    result = tools.execute(
-        "python_compute",
-        {
-            "script": "src/generate.py",
-            "args": [],
-            "timeout": 10,
-            "expected_outputs": ["results/nested/value.json"],
-        },
-    )
-
-    assert result["status"] == "success"
-    assert result["data"]["outputs"][0]["exists"] is True
-
-
-def test_verified_prerequisites_feed_next_claim_and_final_closes_root(
-    tmp_path: Path,
-) -> None:
-    model_claim = {
-        "id": "model-evidence",
-        "node_id": "model",
-        "statement": "The model calculation equals 4.",
-        "artifact": "artifacts/model.json",
-        "supporting_artifacts": [],
-        "checks": [
-            {
-                "kind": "numeric_assertion",
-                "arguments_json": json.dumps(
-                    {
-                        "path": "artifacts/model.json",
-                        "field": "value",
-                        "operator": "==",
-                        "value": 4,
-                        "tolerance": 0,
-                    }
-                ),
-            }
-        ],
-    }
-    decision_claim = {
-        "id": "decision-evidence",
-        "node_id": "decision",
-        "statement": "Given the checked model, the declared policy is maintain.",
-        "artifact": "artifacts/decision.json",
-        "supporting_artifacts": [],
-        "checks": [
-            {
-                "kind": "file_nonempty",
-                "arguments_json": json.dumps(
-                    {"path": "artifacts/decision.json"}
-                ),
-            }
-        ],
-    }
-    modeler = ScriptedModel(
-        [
-            _action(
-                upsert_nodes=[
-                    {
-                        "id": "root",
-                        "question": "Synthesize the model and decision.",
-                        "depends_on": ["model", "decision"],
-                        "priority": 1.0,
-                    },
-                    {
-                        "id": "model",
-                        "question": "What does the model compute?",
-                        "depends_on": [],
-                        "priority": 1.0,
-                    },
-                    {
-                        "id": "decision",
-                        "question": "What follows from the model?",
-                        "depends_on": ["model"],
-                        "priority": 1.0,
-                    },
-                ],
-                tool_calls=[
-                    {
-                        "call_id": "write-model",
-                        "name": "write_text",
-                        "arguments_json": json.dumps(
-                            {
-                                "path": "artifacts/model.json",
-                                "content": '{"value": 4}',
-                            }
-                        ),
-                    },
-                    {
-                        "call_id": "write-decision",
-                        "name": "write_text",
-                        "arguments_json": json.dumps(
-                            {
-                                "path": "artifacts/decision.json",
-                                "content": '{"policy": "maintain"}',
-                            }
-                        ),
-                    },
-                ],
-                candidate_claims=[model_claim, decision_claim],
-                final={
-                    "answer": "The checked policy is maintain.",
-                    "evidence_ids": ["model-evidence", "decision-evidence"],
-                    "limitations": ["This is a local toy decision."],
-                },
-            )
-        ]
-    )
-    verifier = ScriptedModel([_approve(), _approve(), _approve()])
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=verifier,
-        max_steps=1,
-    ).run("Solve a decomposed model and decision problem.")
-
-    assert result.status == "completed"
-    assert node_states(result.state)["root"] == "supported"
-    assert len(verifier.calls) == 3
-    decision_prompt = verifier.calls[1]["prompt"]
-    assert "verified_prerequisite_evidence" in decision_prompt
-    assert "model-evidence" in decision_prompt
-
-
-def test_delivery_projection_preserves_model_authored_paper(
-    tmp_path: Path,
-) -> None:
-    authored = "# Scientific report\n\nA detailed model-authored paper.\n"
-    modeler = ScriptedModel(
-        [
-            _action(
-                tool_calls=[
-                    _write_json(4),
-                    {
-                        "call_id": "write-paper",
-                        "name": "write_text",
-                        "arguments_json": json.dumps(
-                            {"path": "paper/final.md", "content": authored}
-                        ),
-                    },
-                ],
-                candidate_claims=[_claim(4)],
-                final={
-                    "answer": "The answer is 4.",
-                    "evidence_ids": ["e-result"],
-                    "limitations": [],
-                },
-            )
-        ]
-    )
-
-    result = ModelingLoop(
-        workspace=tmp_path,
-        modeler=modeler,
-        verifier=ScriptedModel([_approve(), _approve()]),
-        max_steps=1,
-    ).run("Preserve a richer authored paper.")
-
-    assert result.status == "completed"
-    assert (tmp_path / "paper" / "final.md").read_text(encoding="utf-8") == authored
-    assert "locally_supported" in (
-        tmp_path / "paper" / "delivery.md"
-    ).read_text(encoding="utf-8")
-
-
-class _ScriptedNativeResearcher:
+class _Researcher:
     def __init__(self, modes: list[str]):
-        self.modes = list(modes)
-        self.prompts: list[str] = []
+        self.modes = deque(modes)
+        self.calls: list[dict[str, object]] = []
 
     def run(
         self,
@@ -1146,55 +96,107 @@ class _ScriptedNativeResearcher:
         workspace: Path,
         trace_path: Path,
         timeout_seconds: int,
+        network_mode: str = "offline-compute",
     ) -> dict[str, object]:
-        self.prompts.append(prompt)
-        mode = self.modes.pop(0)
-        contract_path = workspace / ".modeling-agent" / "task-contract.json"
-        contract = json.loads(contract_path.read_text(encoding="utf-8"))
-        contract_hash = content_hash(contract)
-        for directory in ("src", "checks", "results", "paper"):
+        mode = self.modes.popleft()
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "role": role,
+                "workspace": workspace,
+                "trace_path": trace_path,
+                "network_mode": network_mode,
+            }
+        )
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text("{}\n", encoding="utf-8")
+        if mode == "branch-request":
+            research = workspace / "research"
+            research.mkdir(parents=True, exist_ok=True)
+            (research / "branch_requests.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "requests": [
+                            {
+                                "id": "falsifier",
+                                "question": "Can a simpler route falsify the proposed structure?",
+                                "purpose": "independent falsification",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {"role": role, "observable_tool_calls": 1}
+        self._write_submission(workspace, mode=mode)
+        if mode == "mutate-control":
+            control = workspace.parent / ".modeling-agent" / "task-contract.json"
+            control.write_text('{"schema":2,"objective":"tampered"}', encoding="utf-8")
+        return {"role": role, "observable_tool_calls": 4, "network_mode": network_mode}
+
+    @staticmethod
+    def _write_submission(workspace: Path, *, mode: str) -> None:
+        contract = json.loads((workspace / "task-contract.json").read_text(encoding="utf-8"))
+        for directory in ("src", "checks", "data", "results", "paper", "research"):
             (workspace / directory).mkdir(parents=True, exist_ok=True)
+        delivery_relative = contract.get("delivery_artifact", "paper/final.md")
+        delivery_path = workspace / delivery_relative
+        delivery_path.parent.mkdir(parents=True, exist_ok=True)
         generator = (
             "from pathlib import Path\n"
             "Path('results').mkdir(exist_ok=True)\n"
             "Path('results/value.json').write_text("
             "'{\\\"value\\\":42}\\n', encoding='utf-8')\n"
         )
+        if mode == "undeclared-input":
+            generator = (
+                "import json\n"
+                "from pathlib import Path\n"
+                "value=int(Path('data/secret.txt').read_text(encoding='utf-8'))\n"
+                "Path('results').mkdir(exist_ok=True)\n"
+                "Path('results/value.json').write_text(json.dumps({'value':value}), encoding='utf-8')\n"
+            )
         checker = (
             "import json\n"
             "from pathlib import Path\n"
-            "value=json.loads(Path('results/value.json').read_text("
-            "encoding='utf-8'))['value']\n"
-            "assert value == 42\n"
-            "print('value verified')\n"
+            "value=json.loads(Path('results/value.json').read_text(encoding='utf-8'))['value']\n"
+            "manifest=json.loads(Path('submission_manifest.json').read_text(encoding='utf-8'))\n"
+            "assert manifest['schema'] == 2\n"
+            + ("assert value == 41\n" if mode == "bad-check" else "assert value == 42\n")
         )
         (workspace / "src" / "solve.py").write_text(generator, encoding="utf-8")
-        (workspace / "checks" / "check_value.py").write_text(
-            checker, encoding="utf-8"
+        (workspace / "checks" / "check_value.py").write_text(checker, encoding="utf-8")
+        (workspace / "results" / "value.json").write_text('{"value":42}\n', encoding="utf-8")
+        if mode == "undeclared-input":
+            (workspace / "data" / "secret.txt").write_text("42\n", encoding="utf-8")
+        delivery_path.write_text(
+            "# Result\n\nThe bounded local computation returns 42.\n", encoding="utf-8"
         )
-        (workspace / "results" / "value.json").write_text(
-            '{"value":42}\n', encoding="utf-8"
-        )
-        if mode != "missing-paper":
-            (workspace / "paper" / "final.md").write_text(
-                "# Result\n\nThe locally computed value is 42.\n",
-                encoding="utf-8",
-            )
         manifest = {
-            "schema": 1,
-            "contract_hash": contract_hash,
-            "final_answer": "The locally computed value is 42.",
+            "schema": 2,
+            "contract_hash": content_hash(contract),
+            "final_answer": "The bounded local computation returns 42.",
+            "final_claim_ids": ["computed-value"],
             "claims": [
                 {
                     "id": "computed-value",
-                    "statement": "The locally computed value is 42.",
-                    "artifact_paths": ["results/value.json", "paper/final.md"],
+                    "statement": "The bounded local computation returns 42.",
+                    "claim_type": "computational",
+                    "scope": "the supplied deterministic local fixture",
+                    "dependencies": [],
+                    "artifact_paths": ["results/value.json"],
+                    "source_ids": [],
+                    "required_check_ids": ["value-check"],
+                    "baseline": "not applicable to this finite identity",
+                    "falsifiers": ["a replay result other than 42"],
                     "decision_critical": True,
+                    "requested_authority": "E4",
                 }
             ],
-            "limitations": ["This is a local deterministic fixture."],
+            "limitations": ["This does not establish external validity."],
             "artifacts": [
-                {"path": "paper/final.md", "role": "paper"},
+                {"path": delivery_relative, "role": "paper"},
                 {"path": "src/solve.py", "role": "generator"},
                 {"path": "checks/check_value.py", "role": "check"},
                 {"path": "results/value.json", "role": "result"},
@@ -1203,138 +205,958 @@ class _ScriptedNativeResearcher:
                 {
                     "script": "src/solve.py",
                     "args": [],
+                    "input_paths": [],
                     "expected_outputs": ["results/value.json"],
                     "timeout": 30,
                 }
             ],
             "checks": [
                 {
+                    "id": "value-check",
                     "kind": "python_check",
                     "arguments": {"script": "checks/check_value.py"},
+                    "claim_ids": ["computed-value"],
                 }
             ],
         }
+        if mode == "undeclared-input":
+            manifest["artifacts"].append({"path": "data/secret.txt", "role": "input"})
+        if mode == "self-seeded-output":
+            manifest["generators"][0]["input_paths"] = ["results/value.json"]
+        if mode == "ungenerated-claim-artifact":
+            (workspace / "data" / "claimed.json").write_text(
+                '{"value":42}\n', encoding="utf-8"
+            )
+            manifest["artifacts"].append(
+                {"path": "data/claimed.json", "role": "result"}
+            )
+            manifest["claims"][0]["artifact_paths"] = ["data/claimed.json"]
+        if mode == "long-paper":
+            delivery_path.write_text(
+                "# Result\n\n" + ("bounded text " * 9_000) + "\nunsupported tail claim\n",
+                encoding="utf-8",
+            )
+        if mode == "paper-tail":
+            delivery_path.write_text(
+                "# Result\n\nThe bounded result is 42.\nUNIQUE_PAPER_TAIL_CLAIM\n",
+                encoding="utf-8",
+            )
+        if mode == "exact-limit-paper":
+            delivery_path.write_text("x" * 100_000, encoding="utf-8")
+        if mode == "malformed-generator-list":
+            manifest["generators"][0]["input_paths"] = [[]]
+        if mode in {"two-claims", "dependent-claims"}:
+            second = json.loads(json.dumps(manifest["claims"][0]))
+            second.update(
+                {
+                    "id": "derived-value",
+                    "statement": "The derived bounded value is also 42.",
+                    "decision_critical": False,
+                    "dependencies": (
+                        ["computed-value"] if mode == "dependent-claims" else []
+                    ),
+                }
+            )
+            manifest["claims"].append(second)
+            manifest["checks"][0]["claim_ids"].append("derived-value")
+            manifest["final_claim_ids"].append("derived-value")
+        if mode == "cyclic-claim":
+            manifest["claims"][0]["dependencies"] = ["computed-value"]
         (workspace / "submission_manifest.json").write_text(
             json.dumps(manifest), encoding="utf-8"
         )
-        if mode == "mutate-contract":
-            contract["objective"] = "tampered"
-            contract_path.write_text(json.dumps(contract), encoding="utf-8")
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        trace_path.write_text(
-            '{"type":"item.completed","item":{"id":"write","type":"file_change"}}\n',
+
+
+class _BranchResearcher:
+    def run(
+        self,
+        prompt: str,
+        *,
+        role: str,
+        workspace: Path,
+        trace_path: Path,
+        timeout_seconds: int,
+        network_mode: str = "offline-compute",
+    ) -> dict[str, object]:
+        assert (workspace / "branch_packet.json").is_file()
+        (workspace / "branch_summary.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "status": "challenged",
+                    "conclusion": "The simpler baseline exposes an unsupported assumption.",
+                    "observations": ["baseline matches the nominal result"],
+                    "falsifiers": ["out-of-support stress test"],
+                    "recommended_action": "narrow the main claim",
+                }
+            ),
             encoding="utf-8",
         )
-        return {
-            "role": role,
-            "duration_seconds": 0.01,
-            "observable_tool_calls": 1,
-            "timeout_seconds": timeout_seconds,
-        }
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text("{}\n", encoding="utf-8")
+        return {"role": role, "observable_tool_calls": 1}
 
 
-def test_native_sidecar_completes_after_replay_checks_and_fresh_review(
-    tmp_path: Path,
-) -> None:
-    researcher = _ScriptedNativeResearcher(["valid"])
-    sidecar = NativeSidecar(
+class _FailingBranchResearcher:
+    def run(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("branch fixture failed")
+
+
+class _TamperFailResearcher:
+    def run(self, *args: object, **kwargs: object) -> dict[str, object]:
+        workspace = Path(kwargs["workspace"])
+        control = workspace.parent / ".modeling-agent" / "task-contract.json"
+        control.write_text('{"schema":2,"objective":"tampered"}', encoding="utf-8")
+        raise RuntimeError("failed after tampering")
+
+
+class _InterruptResearcher:
+    def run(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise KeyboardInterrupt("simulated abrupt interruption")
+
+
+class _SlowResearcher(_Researcher):
+    def __init__(self, modes: list[str], delay: float):
+        super().__init__(modes)
+        self.delay = delay
+
+    def run(self, *args: object, **kwargs: object) -> dict[str, object]:
+        time.sleep(self.delay)
+        return super().run(*args, **kwargs)
+
+
+class _SlowVerifier(ScriptedModel):
+    def __init__(self, responses: list[dict[str, object]], delay: float):
+        super().__init__(responses)
+        self.delay = delay
+
+    def complete(self, *args: object, **kwargs: object) -> dict[str, object]:
+        time.sleep(self.delay)
+        return super().complete(*args, **kwargs)
+
+
+def _engine(tmp_path: Path, researcher: _Researcher, verifier: ScriptedModel, **kwargs: object) -> ModelingEngine:
+    return ModelingEngine(
         tmp_path,
         researcher=researcher,
-        verifier=ScriptedModel([_approve()]),
-        model_requested="scripted",
-        max_attempts=2,
-        max_seconds=60,
+        verifier=verifier,
+        source_reviewer=ScriptedModel([]),
+        model_requested=str(kwargs.pop("model_requested", "scripted")),
+        max_attempts=int(kwargs.pop("max_attempts", 2)),
+        max_seconds=int(kwargs.pop("max_seconds", 60)),
+        **kwargs,
     )
 
-    state = sidecar.run(default_contract("Compute a reproducible value."))
 
-    assert state["status"] == "completed"
-    assert state["attempts"][0]["status"] == "verified"
-    assert state["attempts"][0]["mechanical"]["replay_ok"] is True
-    assert state["attempts"][0]["mechanical"]["checks_ok"] is True
-    assert state["delivery"]["verified"] is True
-    assert state["delivery"]["claim_ceiling"] == "locally_supported"
-    assert native_status(tmp_path)["status"] == "completed"
-    assert "Work natively inside the current project" in researcher.prompts[0]
+def test_single_engine_completes_with_control_work_separation(tmp_path: Path) -> None:
+    researcher = _Researcher(["valid"])
+    result = _engine(
+        tmp_path, researcher, ScriptedModel([_supported_review()]), max_attempts=1
+    ).solve(default_contract("Compute a reproducible value.", network_mode="offline-compute"))
+
+    assert result.status == "completed"
+    assert researcher.calls[0]["workspace"] == tmp_path / "work"
+    assert not (tmp_path / "work" / ".modeling-agent").exists()
+    assert (tmp_path / ".modeling-agent" / "evidence.jsonl").is_file()
+    assert result.state["delivery"]["claim_ceiling"] == "E4"
+    assert run_status(tmp_path)["evidence_integrity"] == {"computed-value": "current"}
 
 
-def test_native_sidecar_repairs_a_mechanical_contract_failure(
+def test_mechanical_failure_vetoes_fresh_verifier(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(tmp_path, _Researcher(["bad-check"]), verifier, max_attempts=1).solve(
+        default_contract("Reject a failed check.", network_mode="offline-compute")
+    )
+
+    assert result.status == "stopped"
+    assert result.state["attempts"][0]["verdict"]["status"] == "UNSUPPORTED"
+    assert verifier.calls == []
+
+
+def test_completed_artifact_mutation_is_reported_stale_and_revoked_on_resume(
     tmp_path: Path,
 ) -> None:
-    researcher = _ScriptedNativeResearcher(["missing-paper", "valid"])
-    sidecar = NativeSidecar(
+    contract = default_contract("Detect stale evidence.", network_mode="offline-compute")
+    first = _engine(
+        tmp_path, _Researcher(["valid"]), ScriptedModel([_supported_review()]), max_attempts=1
+    ).solve(contract)
+    assert first.status == "completed"
+    (tmp_path / "work" / "results" / "value.json").write_text('{"value":99}', encoding="utf-8")
+    assert run_status(tmp_path)["status"] == "stale"
+
+    resumed = _engine(
         tmp_path,
-        researcher=researcher,
-        verifier=ScriptedModel([_approve()]),
-        model_requested="scripted",
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
         max_attempts=2,
-        max_seconds=60,
-    )
-
-    state = sidecar.run(default_contract("Repair a missing delivery."))
-
-    assert state["status"] == "completed"
-    assert [item["status"] for item in state["attempts"]] == [
-        "mechanical_failed",
-        "verified",
-    ]
-    assert "artifact is missing or empty: paper/final.md" in researcher.prompts[1]
+        allow_budget_amendment=True,
+    ).solve(contract)
+    assert resumed.status == "completed"
+    evidence = (tmp_path / ".modeling-agent" / "evidence.jsonl").read_text(encoding="utf-8")
+    assert '"kind":"revocation"' in evidence
 
 
-def test_native_sidecar_uses_review_findings_for_one_bounded_repair(
+def test_control_plane_tampering_is_detected_before_review(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(
+        tmp_path, _Researcher(["mutate-control"]), verifier, max_attempts=1
+    ).solve(default_contract("Protect authority files.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    errors = result.state["attempts"][0]["verdict"]["errors"]
+    assert "researcher modified the harness-owned control plane" in errors
+    assert verifier.calls == []
+    restored = json.loads((tmp_path / ".modeling-agent" / "task-contract.json").read_text(encoding="utf-8"))
+    assert restored["objective"] == "Protect authority files."
+
+
+def test_on_demand_branch_publishes_working_knowledge_for_next_attempt(
     tmp_path: Path,
 ) -> None:
-    researcher = _ScriptedNativeResearcher(["valid", "valid"])
-    rejected = {
-        "verdict": "REJECT",
-        "findings": ["Add an explicit local claim boundary."],
-        "claim_strength": "unsupported",
+    researcher = _Researcher(["branch-request", "valid"])
+    engine = _engine(
+        tmp_path,
+        researcher,
+        ScriptedModel([_supported_review()]),
+        branch_researcher_factory=_BranchResearcher,
+    )
+    result = engine.solve(default_contract("Challenge a proposed route.", network_mode="offline-compute"))
+
+    assert result.status == "completed"
+    assert result.state["attempts"][0]["status"] == "branched"
+    assert "unsupported assumption" in researcher.calls[1]["prompt"]
+    records = ResearchStore(RunLayout.open(tmp_path).research_path).records()
+    assert any(item["kind"] == "branch_summary" for item in records)
+
+
+def test_source_gate_requires_exact_url_and_observable_web_access(tmp_path: Path) -> None:
+    layout = RunLayout.open(tmp_path)
+    layout.ensure()
+    candidate = {
+        "id": "official-table",
+        "url": "https://example.org/table",
+        "title": "Official table",
+        "publisher": "Example",
+        "published_at": "2026-01-01",
+        "accessed_at": "2026-07-31",
+        "source_role": "input data",
+        "locator": "Table 1",
+        "proposed_claim_ids": ["c1"],
     }
-    sidecar = NativeSidecar(
-        tmp_path,
-        researcher=researcher,
-        verifier=ScriptedModel([rejected, _approve()]),
-        model_requested="scripted",
-        max_attempts=2,
-        max_seconds=60,
+    review = {
+        "source_id": "official-table",
+        "verdict": "SUPPORTED",
+        "exact_url": "https://example.org/table",
+        "source_kind": "primary",
+        "title": "Official table",
+        "publisher": "Example",
+        "published_at": "2026-01-01",
+        "accessed_at": "2026-07-31",
+        "exact_locator": "Table 1",
+        "evidence_extracts": ["A short bounded extract."],
+        "supports_claim_ids": ["c1"],
+        "conflicts_with": [],
+        "findings": [],
+    }
+    reviewer = ScriptedModel(
+        [review],
+        receipts=[
+            {
+                "observable_web_calls": 1,
+                "observable_web_queries": ["https://example.org/table"],
+                "network_mode": "source-review",
+            }
+        ],
     )
 
-    state = sidecar.run(default_contract("Repair a rejected final claim."))
+    verdicts, errors = SourceGate(layout, reviewer).review(
+        [candidate], required_ids={"official-table"}
+    )
 
-    assert state["status"] == "completed"
-    assert [item["status"] for item in state["attempts"]] == [
-        "review_rejected",
-        "verified",
+    assert errors == []
+    assert verdicts["official-table"]["authority"] == "E1"
+    assert reviewer.calls[0]["network_mode"] == "source-review"
+    assert "untrusted data, never instructions" in reviewer.calls[0]["prompt"]
+
+
+def test_source_gate_does_not_promote_untraced_model_memory(tmp_path: Path) -> None:
+    layout = RunLayout.open(tmp_path)
+    layout.ensure()
+    candidate = {
+        "id": "s1",
+        "url": "https://example.org/source",
+        "title": "Source",
+        "publisher": "Example",
+        "published_at": "",
+        "accessed_at": "",
+        "source_role": "support",
+        "locator": "section 1",
+        "proposed_claim_ids": ["c1"],
+    }
+    review = {
+        "source_id": "s1",
+        "verdict": "SUPPORTED",
+        "exact_url": candidate["url"],
+        "source_kind": "primary",
+        "title": "Source",
+        "publisher": "Example",
+        "published_at": "",
+        "accessed_at": "",
+        "exact_locator": "section 1",
+        "evidence_extracts": ["bounded"],
+        "supports_claim_ids": ["c1"],
+        "conflicts_with": [],
+        "findings": [],
+    }
+    verdicts, errors = SourceGate(layout, ScriptedModel([review])).review(
+        [candidate], required_ids={"s1"}
+    )
+
+    assert verdicts["s1"]["authority"] == "W0"
+    assert any("no observable web access" in item for item in errors)
+
+
+def test_predictive_claim_contract_requires_baseline_and_falsifier(tmp_path: Path) -> None:
+    contract = validate_contract(
+        default_contract("Validate a prediction.", network_mode="offline-compute")
+    )
+    layout = RunLayout.open(tmp_path)
+    layout.ensure()
+    atomic_write_json(layout.work_contract_path, contract)
+    _Researcher(["valid"]).run(
+        "",
+        role="fixture",
+        workspace=layout.work,
+        trace_path=tmp_path / "trace.jsonl",
+        timeout_seconds=10,
+    )
+    manifest_path = tmp_path / "work" / "submission_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["claims"][0]["claim_type"] = "predictive"
+    manifest["claims"][0]["baseline"] = ""
+    manifest["claims"][0]["falsifiers"] = []
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _, errors = validate_manifest(tmp_path / "work", contract, content_hash(contract))
+
+    assert "claim computed-value: predictive claim requires a baseline" in errors
+    assert "claim computed-value: predictive claim requires falsifiers or stress tests" in errors
+
+
+def test_workspace_escape_and_generated_network_code_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="escapes workspace"):
+        safe_path(tmp_path, "../outside.txt")
+
+    tools = ToolRegistry(tmp_path)
+    assert tools.execute(
+        "write_text",
+        {"path": "src/network.py", "content": "import requests\n"},
+    )["status"] == "success"
+    result = tools.execute(
+        "python_compute",
+        {
+            "script": "src/network.py",
+            "args": [],
+            "timeout": 10,
+            "expected_outputs": [],
+        },
+    )
+    assert result["status"] == "denied"
+    assert result["error_type"] == "permission_denied"
+
+
+def test_ablation_freezes_new_component_arms_and_is_append_only(tmp_path: Path) -> None:
+    path = tmp_path / "ablation.json"
+    manifest = freeze_ablation(
+        path,
+        objective="A private unseen modeling task.",
+        model="gpt-5.6-sol",
+        max_model_turns=8,
+        max_tool_calls=24,
+        max_wall_seconds=900,
+    )
+    assert [item["id"] for item in manifest["arms"]] == [
+        "raw_codex",
+        "codex_web",
+        "source_gate",
+        "hard_eval",
+        "elastic_memory",
     ]
-    assert "Add an explicit local claim boundary." in researcher.prompts[1]
+    record_result(path, "hard_eval", {"status": "stopped"})
+    with pytest.raises(ValueError, match="already recorded"):
+        record_result(path, "hard_eval", {"status": "completed"})
 
 
-def test_native_sidecar_detects_contract_tampering_and_preserves_delivery(
+def test_partial_review_preserves_delivery_but_never_reports_success(tmp_path: Path) -> None:
+    review = {
+        "verdict": "PARTIALLY_SUPPORTED",
+        "claim_verdicts": [
+            {
+                "claim_id": "computed-value",
+                "verdict": "PARTIALLY_SUPPORTED",
+                "max_authority": "E2",
+                "findings": ["scope is not justified"],
+            }
+        ],
+        "findings": ["narrow the scope"],
+        "max_authority": "E2",
+        "delivery_verdict": "PARTIALLY_SUPPORTED",
+        "delivery_findings": ["scope is not justified"],
+    }
+    result = _engine(
+        tmp_path, _Researcher(["valid"]), ScriptedModel([review]), max_attempts=1
+    ).solve(default_contract("Preserve an unverified delivery.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert result.state["delivery"]["status"] == "best_effort_unverified"
+    assert result.state["delivery"]["claim_ceiling"] == "W0"
+    assert not (tmp_path / ".modeling-agent" / "evidence.jsonl").exists()
+
+
+def test_branch_failure_is_preserved_without_destroying_main_route(tmp_path: Path) -> None:
+    researcher = _Researcher(["branch-request", "valid"])
+    result = _engine(
+        tmp_path,
+        researcher,
+        ScriptedModel([_supported_review()]),
+        branch_researcher_factory=_FailingBranchResearcher,
+    ).solve(default_contract("Survive one failed branch.", network_mode="offline-compute"))
+
+    assert result.status == "completed"
+    branch = result.state["waves"][0]["branches"][0]
+    assert branch["status"] == "failed"
+    assert "branch fixture failed" in branch["error"]
+
+
+def test_cumulative_wall_budget_cannot_be_reset_by_resume(tmp_path: Path) -> None:
+    contract = default_contract("Respect cumulative time.", network_mode="offline-compute")
+    first = _engine(
+        tmp_path,
+        _Researcher(["bad-check"]),
+        ScriptedModel([]),
+        max_attempts=1,
+    ).solve(contract)
+    assert first.status == "stopped"
+    layout = RunLayout.open(tmp_path)
+    state = json.loads(layout.state_path.read_text(encoding="utf-8"))
+    state["elapsed_seconds"] = state["budgets"]["max_seconds"]
+    atomic_write_json(layout.state_path, state)
+    researcher = _Researcher(["valid"])
+
+    resumed = _engine(
+        tmp_path,
+        researcher,
+        ScriptedModel([_supported_review()]),
+        max_attempts=2,
+        allow_budget_amendment=True,
+    ).solve(contract)
+
+    assert resumed.status == "stopped"
+    assert resumed.reason == "cumulative_wall_time_budget_reached"
+    assert researcher.calls == []
+
+
+def test_source_record_hash_participates_in_completed_claim_integrity(
     tmp_path: Path,
 ) -> None:
-    sidecar = NativeSidecar(
+    layout = RunLayout.open(tmp_path)
+    store = RunStore(layout)
+    contract = default_contract("Synthetic integrity fixture.", network_mode="offline-compute")
+    atomic_write_json(layout.contract_path, contract)
+    source = layout.sources / "official" / "review-1.json"
+    atomic_write_json(source, {"verdict": "SUPPORTED"})
+    store.save(
+        {
+            "schema": 1,
+            "run_id": "run",
+            "status": "completed",
+            "contract_hash": content_hash(contract),
+            "attempts": [],
+            "waves": [],
+            "delivery": {"status": "verified"},
+        }
+    )
+    store.admit(
+        {
+            "schema": 1,
+            "kind": "claim",
+            "claim_id": "c1",
+            "artifact_records": [],
+            "source_records": [
+                {
+                    "source_id": "official",
+                    "path": "sources/official/review-1.json",
+                    "sha256": file_hash(source),
+                    "snapshot_hash": "snapshot",
+                }
+            ],
+        }
+    )
+    store.admit(
+        {
+            "schema": 1,
+            "kind": "claim",
+            "claim_id": "c2",
+            "dependencies": ["c1"],
+            "artifact_records": [],
+            "source_records": [],
+        }
+    )
+    assert run_status(tmp_path)["status"] == "completed"
+    atomic_write_json(source, {"verdict": "CONFLICTING"})
+    status = run_status(tmp_path)
+    assert status["status"] == "stale"
+    assert status["evidence_integrity"] == {"c1": "stale", "c2": "stale"}
+
+
+def test_unsupported_noncritical_claim_is_never_admitted(tmp_path: Path) -> None:
+    result = _engine(
         tmp_path,
-        researcher=_ScriptedNativeResearcher(["mutate-contract"]),
+        _Researcher(["two-claims"]),
+        ScriptedModel([_two_claim_review(second_verdict="UNSUPPORTED")]),
+        max_attempts=1,
+    ).solve(default_contract("Reject one unsupported claim.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert result.state["attempts"][0]["verdict"]["status"] == "PARTIALLY_SUPPORTED"
+    assert not (tmp_path / ".modeling-agent" / "evidence.jsonl").exists()
+
+
+def test_overall_and_dependency_authority_cap_claims(tmp_path: Path) -> None:
+    result = _engine(
+        tmp_path,
+        _Researcher(["dependent-claims"]),
+        ScriptedModel(
+            [
+                _two_claim_review(
+                    first_authority="E2",
+                    second_authority="E4",
+                    overall_authority="E4",
+                )
+            ]
+        ),
+        max_attempts=1,
+    ).solve(default_contract("Propagate evidence authority.", network_mode="offline-compute"))
+
+    assert result.status == "completed"
+    records = RunStore(RunLayout.open(tmp_path)).evidence()
+    authority = {item["claim_id"]: item["authority"] for item in records}
+    assert authority == {"computed-value": "E2", "derived-value": "E2"}
+    assert result.state["delivery"]["claim_ceiling"] == "E2"
+
+
+def test_working_only_overall_review_cannot_complete(tmp_path: Path) -> None:
+    review = _supported_review()
+    review["max_authority"] = "W0"
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([review]),
+        max_attempts=1,
+    ).solve(default_contract("Do not promote W0.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert any(
+        "working-only" in item
+        for item in result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+def test_claim_dependency_cycle_is_rejected_before_review(tmp_path: Path) -> None:
+    contract = validate_contract(default_contract("Reject cycles.", network_mode="offline-compute"))
+    layout = RunLayout.open(tmp_path)
+    layout.ensure()
+    atomic_write_json(layout.work_contract_path, contract)
+    _Researcher(["cyclic-claim"]).run(
+        "",
+        role="fixture",
+        workspace=layout.work,
+        trace_path=tmp_path / "trace.jsonl",
+        timeout_seconds=10,
+    )
+
+    _, errors = validate_manifest(layout.work, contract, content_hash(contract))
+
+    assert any("dependency graph contains a cycle" in item for item in errors)
+
+
+def test_replay_cannot_read_undeclared_generator_input(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(
+        tmp_path,
+        _Researcher(["undeclared-input"]),
+        verifier,
+        max_attempts=1,
+    ).solve(default_contract("Enforce replay inputs.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert verifier.calls == []
+    assert "did not reproduce" in " ".join(
+        result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "results/value.json",
+        "paper/final.md",
+        "src/solve.py",
+        "checks/check_value.py",
+        "submission_manifest.json",
+    ],
+)
+def test_any_reviewed_provenance_mutation_stales_delivery(
+    tmp_path: Path, relative: str
+) -> None:
+    contract = default_contract("Bind all reviewed provenance.", network_mode="offline-compute")
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
+        max_attempts=1,
+    ).solve(contract)
+    assert result.status == "completed"
+    path = tmp_path / "work" / relative
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    assert run_status(tmp_path)["status"] == "stale"
+
+
+def test_evidence_edit_and_deletion_are_not_reported_completed(tmp_path: Path) -> None:
+    contract = default_contract("Detect evidence tampering.", network_mode="offline-compute")
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
+        max_attempts=1,
+    ).solve(contract)
+    assert result.status == "completed"
+    evidence_path = tmp_path / ".modeling-agent" / "evidence.jsonl"
+    original = evidence_path.read_text(encoding="utf-8")
+    record = json.loads(original)
+    record["statement"] = "tampered"
+    evidence_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    assert run_status(tmp_path)["status"] == "corrupt"
+
+    evidence_path.unlink()
+    assert run_status(tmp_path)["status"] == "corrupt"
+
+
+def test_delivery_requires_its_own_supported_review(tmp_path: Path) -> None:
+    review = _supported_review()
+    review["delivery_verdict"] = "UNSUPPORTED"
+    review["delivery_findings"] = ["paper introduces an unsupported conclusion"]
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([review]),
+        max_attempts=1,
+    ).solve(default_contract("Review the final delivery.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert not (tmp_path / ".modeling-agent" / "evidence.jsonl").exists()
+
+
+def test_source_support_must_name_the_proposed_claim(tmp_path: Path) -> None:
+    layout = RunLayout.open(tmp_path)
+    layout.ensure()
+    candidate = {
+        "id": "official",
+        "url": "https://example.org/source",
+        "title": "Official",
+        "publisher": "Example",
+        "published_at": "",
+        "accessed_at": "",
+        "source_role": "support",
+        "locator": "section 1",
+        "proposed_claim_ids": ["c1"],
+    }
+    review = {
+        "source_id": "official",
+        "verdict": "SUPPORTED",
+        "exact_url": candidate["url"],
+        "source_kind": "primary",
+        "title": "Official",
+        "publisher": "Example",
+        "published_at": "",
+        "accessed_at": "",
+        "exact_locator": "section 1",
+        "evidence_extracts": ["bounded"],
+        "supports_claim_ids": ["different-claim"],
+        "conflicts_with": [],
+        "findings": [],
+    }
+    reviewer = ScriptedModel(
+        [review],
+        receipts=[
+            {
+                "observable_web_calls": 1,
+                "observable_web_queries": [candidate["url"]],
+            }
+        ],
+    )
+
+    verdicts, errors = SourceGate(layout, reviewer).review(
+        [candidate], required_ids={"official"}
+    )
+
+    assert verdicts["official"]["authority"] == "W0"
+    assert any("not proposed" in item or "every proposed claim" in item for item in errors)
+
+
+def test_deadline_exhaustion_after_review_cannot_admit(tmp_path: Path) -> None:
+    result = _engine(
+        tmp_path,
+        _SlowResearcher(["valid"], 0.55),
+        _SlowVerifier([_supported_review()], 0.55),
+        max_attempts=1,
+        max_seconds=1,
+    ).solve(default_contract("Enforce the final deadline.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert not (tmp_path / ".modeling-agent" / "evidence.jsonl").exists()
+
+
+def test_budget_and_model_provenance_are_frozen_on_resume(tmp_path: Path) -> None:
+    contract = default_contract("Freeze runtime provenance.", network_mode="offline-compute")
+    first = _engine(
+        tmp_path,
+        _Researcher(["bad-check"]),
+        ScriptedModel([]),
+        max_attempts=1,
+        model_requested="model-a",
+    ).solve(contract)
+    assert first.status == "stopped"
+
+    with pytest.raises(ValueError, match="budgets are frozen"):
+        _engine(
+            tmp_path,
+            _Researcher(["valid"]),
+            ScriptedModel([_supported_review()]),
+            max_attempts=2,
+            model_requested="model-a",
+        ).solve(contract)
+    with pytest.raises(ValueError, match="model_requested"):
+        _engine(
+            tmp_path,
+            _Researcher(["valid"]),
+            ScriptedModel([_supported_review()]),
+            max_attempts=1,
+            model_requested="model-b",
+        ).solve(contract)
+
+
+def test_failed_requalification_downgrades_old_delivery(tmp_path: Path) -> None:
+    contract = default_contract("Revoke stale delivery.", network_mode="offline-compute")
+    first = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
+        max_attempts=1,
+    ).solve(contract)
+    assert first.status == "completed"
+    (tmp_path / "work" / "results" / "value.json").write_text(
+        '{"value":99}', encoding="utf-8"
+    )
+
+    resumed = _engine(
+        tmp_path,
+        _Researcher([]),
+        ScriptedModel([]),
+        max_attempts=1,
+    ).solve(contract)
+
+    assert resumed.status == "stopped"
+    assert resumed.state["delivery"]["status"] == "revoked"
+    assert resumed.state["delivery"]["claim_ceiling"] == "W0"
+
+
+def test_control_snapshot_is_restored_when_researcher_raises(tmp_path: Path) -> None:
+    contract = default_contract("Restore failed tampering.", network_mode="offline-compute")
+    result = ModelingEngine(
+        tmp_path,
+        researcher=_TamperFailResearcher(),
         verifier=ScriptedModel([]),
+        source_reviewer=ScriptedModel([]),
+        model_requested="scripted",
+        max_attempts=1,
+        max_seconds=60,
+    ).solve(contract)
+
+    assert result.status == "stopped"
+    assert result.state["attempts"][0]["control_tamper_restored"] is True
+    restored = json.loads(
+        (tmp_path / ".modeling-agent" / "task-contract.json").read_text(encoding="utf-8")
+    )
+    assert restored["objective"] == "Restore failed tampering."
+
+
+def test_run_lock_rejects_a_second_writer(tmp_path: Path) -> None:
+    layout = RunLayout.open(tmp_path)
+    with run_lock(layout):
+        with pytest.raises(RuntimeError, match="already owns"):
+            with run_lock(layout):
+                pass
+
+
+def test_invalid_working_memory_does_not_hide_verified_status(tmp_path: Path) -> None:
+    contract = default_contract("Keep W0 non-authoritative.", network_mode="offline-compute")
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
+        max_attempts=1,
+    ).solve(contract)
+    assert result.status == "completed"
+    research = tmp_path / "work" / "research" / "records.jsonl"
+    research.write_text('{"kind":"unknown","statement":"bad"}\n', encoding="utf-8")
+
+    status = run_status(tmp_path)
+
+    assert status["status"] == "completed"
+    assert status["research_graph"]["incomplete"] is True
+    assert status["research_errors"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_error"),
+    [
+        ("self-seeded-output", "cannot preload its expected outputs"),
+        ("ungenerated-claim-artifact", "without generator provenance"),
+    ],
+)
+def test_manifest_cannot_fake_generator_provenance(
+    tmp_path: Path, mode: str, expected_error: str
+) -> None:
+    result = _engine(
+        tmp_path,
+        _Researcher([mode]),
+        ScriptedModel([]),
+        max_attempts=1,
+    ).solve(default_contract("Require genuine replay provenance.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert any(
+        expected_error in item
+        for item in result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+def test_fresh_review_fails_closed_when_paper_tail_is_omitted(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(
+        tmp_path,
+        _Researcher(["long-paper"]),
+        verifier,
+        max_attempts=1,
+    ).solve(default_contract("Review the complete paper.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert verifier.calls == []
+    assert any(
+        "cannot contain complete text" in item
+        for item in result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+def test_review_packet_exact_boundary_does_not_hide_later_code(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(
+        tmp_path,
+        _Researcher(["exact-limit-paper"]),
+        verifier,
+        max_attempts=1,
+    ).solve(default_contract("Review every selected text artifact.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert verifier.calls == []
+    assert any(
+        "cannot contain complete text" in item
+        for item in result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+def test_custom_delivery_artifact_is_reviewed_and_projected(tmp_path: Path) -> None:
+    contract = default_contract("Review the configured delivery.", network_mode="offline-compute")
+    contract["delivery_artifact"] = "deliverable/report.md"
+    contract["required_artifacts"] = []
+    verifier = ScriptedModel([_supported_review()])
+
+    result = _engine(
+        tmp_path,
+        _Researcher(["paper-tail"]),
+        verifier,
+        max_attempts=1,
+    ).solve(contract)
+
+    assert result.status == "completed"
+    assert "UNIQUE_PAPER_TAIL_CLAIM" in verifier.calls[0]["prompt"]
+    assert result.state["delivery"]["paper"] == "work/deliverable/report.md"
+
+
+def test_malformed_manifest_is_structurally_rejected(tmp_path: Path) -> None:
+    verifier = ScriptedModel([])
+    result = _engine(
+        tmp_path,
+        _Researcher(["malformed-generator-list"]),
+        verifier,
+        max_attempts=1,
+    ).solve(default_contract("Reject malformed arrays.", network_mode="offline-compute"))
+
+    assert result.status == "stopped"
+    assert verifier.calls == []
+    assert any(
+        "input_paths must be a string array" in item
+        for item in result.state["attempts"][0]["verdict"]["errors"]
+    )
+
+
+def test_interrupted_attempt_is_charged_and_consumed_on_resume(tmp_path: Path) -> None:
+    contract = default_contract("Persist interrupted work.", network_mode="offline-compute")
+    engine = ModelingEngine(
+        tmp_path,
+        researcher=_InterruptResearcher(),
+        verifier=ScriptedModel([]),
+        source_reviewer=ScriptedModel([]),
         model_requested="scripted",
         max_attempts=1,
         max_seconds=60,
     )
 
-    state = sidecar.run(default_contract("Do not rewrite the task contract."))
+    with pytest.raises(KeyboardInterrupt):
+        engine.solve(contract)
 
-    assert state["status"] == "stopped"
-    assert state["attempts"][0]["status"] == "mechanical_failed"
-    assert "researcher modified the immutable task contract" in state["attempts"][0][
-        "contract_errors"
-    ]
-    assert state["delivery"]["verified"] is False
-    assert state["delivery"]["final_answer"]
+    resumed = _engine(
+        tmp_path,
+        _Researcher([]),
+        ScriptedModel([]),
+        max_attempts=1,
+        max_seconds=60,
+    ).solve(contract)
+
+    assert resumed.status == "stopped"
+    assert resumed.state["attempts"][0]["status"] == "interrupted"
+    assert resumed.state["attempts"][0]["charged_seconds"] >= 0
 
 
-def test_native_contract_rejects_workspace_escape() -> None:
-    contract = default_contract("Stay inside the workspace.")
-    contract["manifest_path"] = "../escape.json"
+@pytest.mark.parametrize("target", ["contract", "verifier-trace"])
+def test_control_provenance_mutation_invalidates_status(
+    tmp_path: Path, target: str
+) -> None:
+    result = _engine(
+        tmp_path,
+        _Researcher(["valid"]),
+        ScriptedModel([_supported_review()]),
+        max_attempts=1,
+    ).solve(default_contract("Bind control provenance.", network_mode="offline-compute"))
+    assert result.status == "completed"
 
-    with pytest.raises(ValueError, match="escapes workspace"):
-        validate_contract(contract)
+    if target == "contract":
+        (tmp_path / ".modeling-agent" / "task-contract.json").write_text(
+            '{"schema":2,"objective":"tampered"}', encoding="utf-8"
+        )
+        assert run_status(tmp_path)["status"] == "corrupt"
+    else:
+        (tmp_path / ".modeling-agent" / "traces" / "verifier-1.jsonl").unlink()
+        assert run_status(tmp_path)["status"] == "stale"

@@ -6,19 +6,26 @@ import ast
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from .core import file_hash, safe_path
+from .model import (
+    _WORKSPACE_ONLY_PROFILE,
+    _workspace_only_profile_args,
+    ensure_workspace_only_sandbox,
+)
+from .storage import file_hash, safe_path
 
 
 WRITE_ROOTS = {"artifacts", "checks", "data", "notes", "paper", "results", "src"}
 ROOT_WRITE_FILES = {"submission.json"}
 SCRIPT_ROOTS = {"checks", "src"}
 DENIED_IMPORT_ROOTS = {
+    "importlib",
     "ctypes",
     "ftplib",
     "http",
@@ -141,6 +148,41 @@ def _compute_environment(workspace: Path) -> dict[str, str]:
     environment["MODELING_AGENT_WORKSPACE"] = str(workspace)
     environment["PYTHONHASHSEED"] = "0"
     return environment
+
+
+def _python_command(
+    workspace: Path,
+    command: list[str],
+) -> tuple[list[str], str]:
+    """Wrap generated Python in an OS-enforced Codex permission profile.
+
+    Unit tests replace this private function with a deterministic fake. The
+    production API has no switch that disables the OS sandbox.
+    """
+    configured = os.environ.get("MODELING_AGENT_CODEX_BIN")
+    executable = configured or shutil.which("codex")
+    if not executable:
+        raise RuntimeError(
+            "no Codex CLI is available for OS-sandboxed Python execution"
+        )
+    executable_path = Path(executable).resolve()
+    ensure_workspace_only_sandbox(
+        executable_path, workspace.resolve(), timeout_seconds=20
+    )
+    return (
+        [
+            str(executable_path),
+            "sandbox",
+            "-C",
+            str(workspace),
+            *_workspace_only_profile_args(),
+            "-P",
+            _WORKSPACE_ONLY_PROFILE,
+            "--",
+            *command,
+        ],
+        f"codex-permission-profile:{_WORKSPACE_ONLY_PROFILE}",
+    )
 
 
 class ToolRegistry:
@@ -338,8 +380,12 @@ class ToolRegistry:
             isinstance(item, str) for item in outputs
         ):
             raise ValueError("expected_outputs must be a string array")
-        if not isinstance(timeout, int) or not 1 <= timeout <= 120:
-            raise ValueError("python_compute.timeout must be in 1..120")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not 0 < timeout <= 120
+        ):
+            raise ValueError("python_compute.timeout must be in (0, 120]")
         script = _script_target(self.workspace, relative)
         if not script.is_file():
             raise ValueError(f"script not found: {relative}")
@@ -358,8 +404,12 @@ class ToolRegistry:
             )
         started = time.monotonic()
         try:
-            process = subprocess.run(
+            command, sandbox = _python_command(
+                self.workspace,
                 [sys.executable, "-I", str(script), *argv],
+            )
+            process = subprocess.run(
+                command,
                 cwd=self.workspace,
                 env=_compute_environment(self.workspace),
                 text=True,
@@ -378,6 +428,13 @@ class ToolRegistry:
                     "stderr": _bounded(str(exc.stderr or "")),
                 },
                 error_type="timeout",
+            )
+        except (OSError, RuntimeError) as exc:
+            return _result(
+                "denied",
+                "OS-sandboxed Python execution is unavailable",
+                data={"error": str(exc)},
+                error_type="sandbox_unavailable",
             )
         output_records = []
         missing = []
@@ -401,6 +458,7 @@ class ToolRegistry:
                 "script_sha256": file_hash(script),
                 "returncode": process.returncode,
                 "duration_seconds": round(time.monotonic() - started, 6),
+                "sandbox": sandbox,
                 "stdout": _bounded(process.stdout or ""),
                 "stderr": _bounded(process.stderr or ""),
                 "outputs": output_records,
@@ -437,7 +495,11 @@ def _json_field(value: Any, dotted: str) -> tuple[bool, Any]:
 
 
 def run_check(
-    workspace: Path, kind: str, arguments: dict[str, Any]
+    workspace: Path,
+    kind: str,
+    arguments: dict[str, Any],
+    *,
+    timeout: float = 60,
 ) -> dict[str, Any]:
     """Run one check. Unknown or malformed checks fail closed."""
 
@@ -490,8 +552,12 @@ def run_check(
             audit_errors = _audit_python_source(script.read_text(encoding="utf-8"))
             if audit_errors:
                 return {"kind": kind, "script": relative, "ok": False, "errors": audit_errors}
-            process = subprocess.run(
+            command, sandbox = _python_command(
+                workspace.resolve(),
                 [sys.executable, "-I", str(script)],
+            )
+            process = subprocess.run(
+                command,
                 cwd=workspace,
                 env=_compute_environment(workspace),
                 text=True,
@@ -499,7 +565,7 @@ def run_check(
                 errors="replace",
                 capture_output=True,
                 shell=False,
-                timeout=60,
+                timeout=max(0.001, min(float(timeout), 60.0)),
             )
             return {
                 "kind": kind,
@@ -508,10 +574,12 @@ def run_check(
                 "returncode": process.returncode,
                 "stdout": _bounded(process.stdout or "", 4000),
                 "stderr": _bounded(process.stderr or "", 4000),
+                "sandbox": sandbox,
             }
         return {"kind": kind, "ok": False, "error": "unknown check kind"}
     except (
         OSError,
+        RuntimeError,
         UnicodeError,
         ValueError,
         TypeError,

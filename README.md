@@ -1,119 +1,160 @@
 # THIN Modeling Agent
 
-THIN 是一个面向真实、未见数学建模问题的轻量 Agent Harness。它不规定模型族，
-也不把研究过程塞进固定阶段。推荐的 `native` 模式让 Codex 在隔离工作区中使用
-原生 shell、读写和推理能力；Harness 只冻结任务合同、限制副作用、重放关键计算、
-检查证据，并让新的 verifier 上下文复核最终声明。
+THIN 是一个由 Codex 原生驱动的开放数学建模 Agent。Codex 可以定义问题、搜索资料、提出任意模型、写任务代码、试错、并行探索和换方向；Harness 只控制不能交给同一个生成模型的部分：预算、任务本地权限、可复现执行、来源绑定、独立复核、证据承认、撤销和停止。
 
-## 核心链路
+它不建设固定 S0–S6 流水线、永久角色群、模型族白名单、方法包工厂、向量数据库或证书栈。
+
+## 架构
 
 ```mermaid
 flowchart LR
-    P["冻结的任务合同"] --> R["Native Codex 研究循环"]
-    R <--> W["隔离的任务工作区"]
-    R --> M["submission_manifest.json"]
-    M --> C{"合同与路径检查"}
-    C -->|"失败"| R
-    C -->|"通过"| X["清洁环境重放生成器"]
-    X --> K{"声明的检查"}
-    K -->|"失败"| R
-    K -->|"通过"| V["新上下文独立复核"]
-    V -->|"拒绝 + 反馈"| R
-    V -->|"局部支持"| D["保留交付物与证据清单"]
+    Q["真实问题、数据与交付要求"] --> C["冻结 Task Contract"]
+    C --> L["Lead Codex<br/>开放研究"]
+    L -->|"有信息价值时"| B["临时竞争/反证分支"]
+    B --> K["W0 共享摘要"]
+    K --> L
+    L --> M["论文、代码、结果、Manifest"]
+    M --> S["Source Gate<br/>精确 URL/claim 绑定"]
+    M --> R["声明输入的清洁重放<br/>OS 沙箱 + 机械检查"]
+    S --> V["Fresh read-only verifier"]
+    R --> V
+    V -->|"全部 claim 与 delivery 支持"| E["Harness 写入 Evidence"]
+    V -->|"拒绝/未运行"| L
+    E --> D["有界论文或决策结论"]
 ```
 
-- Codex 自己决定问题分解、模型族、代码结构、实验顺序和何时换向。
-- `submission_manifest.json` 只描述交付物、声明、生成器和检查，不规定研究过程。
-- Harness 重放声明的 Python 生成器，并要求关键输出与原输出逐字节一致。
-- 最终 verifier 只看冻结合同、交付物和重放记录，不能批准无证据的强声明。
-- 失败时只把具体反馈送回研究循环；达到预算后保留最佳交付物并如实标记未验证。
+研究者只以 `<run>/work/` 为工作根。Harness 独占 `<run>/.modeling-agent/`、`<run>/sources/` 和 Evidence 承认权。生成者不能批准自己的 claim 或最终论文。
 
-## 安装
+## 安装与宿主要求
 
-需要 Python 3.11+ 和可用的 Codex CLI。
+需要 Python 3.11+ 和兼容的 Codex CLI：
 
 ```powershell
 python -m pip install -e ".[test]"
 python -m modeling_agent --version
+codex --version
 ```
 
-核心运行时只使用 Python 标准库；`pytest` 仅用于测试。
+核心 Python 包没有第三方运行时依赖。
 
-## 推荐运行：Native Codex + Thin Sidecar
+生产资格执行有两个强制宿主边界：
+
+- Lead/branch 使用从 `:workspace` 扩展的 `modeling-workspace-only` 权限配置，默认拒绝根文件系统读取，只开放最小运行路径和任务工作根；启动模型前还会用真实命令验证“工作根可读、父目录 canary 不可读”，任一异常立即停止；
+- 生成代码的独立重放复用同一个 workspace-only profile 与双 canary，再通过 `codex sandbox` 执行；不提供不安全回退。
+
+可先检查本机沙箱：
 
 ```powershell
-python -m modeling_agent native `
+codex sandbox -P :workspace -C D:\some-empty-workspace -- python -I -c "print('ok')"
+```
+
+这条命令只检查底层 sandbox helper 能否启动；Harness 还会自动运行更严格的 workspace-only 父目录读取 canary。如果真实 OS 沙箱不可用或仍能读出父目录，研究会在启动 Lead 前停止；重放阶段也会返回 `UNSUPPORTED/NOT_RUN`，不会用普通宿主 Python 冒充隔离执行。
+
+## 运行
+
+允许公开网页研究：
+
+```powershell
+python -m modeling_agent solve `
   --workspace D:\runs\my-problem `
-  --objective "在这里给出完整的建模问题" `
-  --max-attempts 2 `
+  --objective "在这里给出完整数学建模问题" `
+  --network research-search `
+  --max-attempts 3 `
   --max-seconds 1800
 ```
 
-首次运行会在工作区冻结默认合同。需要改变必须交付的文件、最低生成器或检查数量时，
-可显式传入 `--contract contract.json`；合同一旦写入工作区就不能静默替换。
-
-查看状态：
+离线研究：
 
 ```powershell
+python -m modeling_agent solve `
+  --workspace D:\runs\offline-problem `
+  --objective "问题原文" `
+  --network offline-compute
+```
+
+恢复任务时继承冻结预算：
+
+```powershell
+python -m modeling_agent solve --workspace D:\runs\my-problem
 python -m modeling_agent status --workspace D:\runs\my-problem
 ```
 
-主要状态保存在：
-
-```text
-<workspace>/
-  .modeling-agent/task-contract.json
-  .modeling-agent/native-state.json
-  .modeling-agent/native-events.jsonl
-  submission_manifest.json
-  paper/final.md
-```
-
-旧的 `run` 命令仍保留，用作结构化 Problem Graph 循环的消融臂，不再是默认产品路径。
-
-## 冻结对照实验
-
-先冻结同一任务、模型、预算、评分规则、简单基线和独立评分者：
+预算不能被默认参数静默扩大。确需增加时必须显式声明：
 
 ```powershell
-python -m modeling_agent ablation-init `
-  --output D:\runs\experiment\ablation.json `
-  --objective "未见任务原文"
+python -m modeling_agent solve `
+  --workspace D:\runs\my-problem `
+  --max-attempts 5 `
+  --max-seconds 3600 `
+  --amend-budget
 ```
 
-三个实验臂是：
+任务合同、模型标识和已有 Evidence provenance 不能在恢复时静默替换。外部调用开始前会保存 active attempt；进程异常中断后，该次尝试与最多其冻结调用预算会在恢复时计入累计消耗，不能靠重启清零。
 
-1. `raw_codex`：一次原生模型回答；
-2. `thin_harness`：原有结构化 Problem Graph 循环；
-3. `native_sidecar`：原生 Codex 研究循环加最小合同、重放和最终复核。
+## 运行目录
 
-内部测试通过只证明实现符合合同。只有冻结未见任务上的盲评结果，才能说明
-`native_sidecar` 是否优于裸 Codex 或原有 THIN。
+```text
+<run>/
+  .modeling-agent/          # Harness 独占
+    task-contract.json
+    run-state.json          # 恢复游标与 Evidence 头锚
+    events.jsonl
+    evidence.jsonl          # 有序哈希链；claim 与 revocation
+    traces/
+    verdicts/
+  work/                     # Lead Codex 工作根
+    task-contract.json      # 可校验镜像
+    research/
+    src/
+    checks/
+    data/
+    results/
+    paper/final.md
+    submission_manifest.json
+  branches/                 # 按需临时分支
+  sources/                  # 版本化 Source Gate 记录
+```
 
-## 能力边界
+一个非阻塞 OS 文件锁保证同一 run 只有一个写入者。工作记录损坏只会使 Problem Graph 投影不完整，不会被提升为证据，也不会遮蔽已经验证的状态。
 
-- Native 研究循环依赖 Codex 的 `workspace-write` 沙箱；Windows 嵌套运行显式使用
-  受限 token 的 `unelevated` 实现，Sidecar 另做路径和合同检查；
-- 当前只能在运行结束后统计 Codex 的可观察工具调用，不能在单次原生循环中硬截断调用数；
-- 只重放 manifest 声明的 Python 生成器，未声明或非 Python 计算不获得同等级复现保证；
-- 新 verifier 上下文不是外部科学同行评议；
-- 通用机械检查不能自动证明因果、机制、稳健性或外推；
-- 默认关闭联网、插件、浏览器、安装依赖和任务目录外写入，也不授权现实世界行动；
-- 是否真正提升建模能力，必须由冻结的未见任务和外部评分证明。
+## 证据边界
 
-详细设计见 [THIN_MODELING_AGENT.md](docs/architecture/THIN_MODELING_AGENT.md)。
+| 层级 | 含义 |
+|---|---|
+| W0 | 搜索摘要、模型记忆、假设、工作记录、分支结论；只能指导研究 |
+| E1 | Source Gate 对精确 URL、定位和具体 claim 的 fresh 模型复核记录 |
+| E2–E3 | 机械检查、重放、基线、留出、反证或压力测试所支持的有界证据 |
+| E4 | fresh、read-only、tool-free verifier 承认的本地证据上限 |
+| E5 | 外部数据、外部评审或真实环境资格；本 Harness 不能自行授予 |
 
-## 开发
+`SUPPORTED`、`PARTIALLY_SUPPORTED`、`UNSUPPORTED`、`INCONCLUSIVE` 和 `NOT_RUN` 分开保存。只有全部声明、依赖和最终 delivery 都被支持，且证据级别高于 W0，Harness 才能写入 Evidence 并报告完成。
+
+当前 Source Gate 绑定精确 URL 的可观测 web query、短摘录、定位、来源类型和 claim ID；它保存的是带哈希的“模型复核记录”，不是网页原始字节或 WARC 归档。因此它能排除无 trace 的模型记忆式引用，但不能证明网页长期未变化。
+
+Evidence 会绑定完整复核工件集合，包括输入、生成器、检查器、结果、完整交付文档、Manifest、Task Contract 以及 source/verifier 原始 trace。交付文档必须由合同中的 `delivery_artifact` 明确指定，并完整装入有界 verifier packet；超出 packet 上限时返回 `NOT_RUN`，不会只审开头。任何已绑定项之后变化，delivery 变为 `stale`；恢复时追加 revocation 并清空旧的 verified delivery。Evidence 记录自身被编辑、删除、截断或重排时报告 `corrupt`。
+
+## 弹性探索
+
+默认只有一个 Lead。Lead 只有在竞争模型、简单基线、反证或压力测试具有信息价值时才申请临时分支。分支互相隔离，只通过波次结束后的只读 W0 摘要共享结论；失败与反例会保留，不会覆盖。
+
+## 消融
+
+```powershell
+python -m modeling_agent eval `
+  --output D:\runs\experiment\ablation.json `
+  --objective "冻结的私有未见任务"
+```
+
+五个递增臂为 `raw_codex`、`codex_web`、`source_gate`、`hard_eval` 和 `elastic_memory`。只有冻结未见任务证明组件提高建模质量、来源蕴含、复现、正确弃权或换向质量，组件才应保留。
+
+## 验证
 
 ```powershell
 python -m pytest tests/test_thin_modeling_agent.py -q
 python -m pytest
+python -m ruff check modeling_agent tests
+python -m modeling_agent --version
+python -m modeling_agent --help
 ```
 
-目录保持刻意精简：
-
-```text
-modeling_agent/                         # 唯一运行时包
-tests/test_thin_modeling_agent.py       # 核心合同测试
-docs/architecture/THIN_MODELING_AGENT.md
-```
+内部测试只证明实现语义，不证明建模效果或外部科学资格。当前机器还必须单独通过 Codex CLI 启动、权限配置和 `codex sandbox` 现场探针，才能运行真实资格实验。详细设计见 [架构文档](docs/architecture/THIN_MODELING_AGENT.md)。

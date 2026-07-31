@@ -1,15 +1,13 @@
 """A small, open-ended mathematical-modeling agent harness."""
 
-from .loop import ModelingLoop, RunResult
+from .engine import ModelingEngine, SolveResult
 from .model import CodexCLIModel, NativeCodexResearcher, ScriptedModel
-from .sidecar import NativeSidecar
 
 __all__ = [
     "CodexCLIModel",
-    "ModelingLoop",
+    "ModelingEngine",
     "NativeCodexResearcher",
-    "NativeSidecar",
-    "RunResult",
     "ScriptedModel",
+    "SolveResult",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

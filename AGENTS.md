@@ -10,8 +10,9 @@ and centered on solving real mathematical-modeling problems.
   direction after failure.
 - The harness owns budgets, task-local filesystem boundaries, durable state,
   artifact hashes, mechanical checks, evidence admission, and stop conditions.
-- Checked `working` evidence may guide research but cannot support a final
-  claim. Decision-relevant `claim` evidence requires a fresh verifier context.
+- Model-authored research records and branch summaries are `W0` working
+  knowledge. Decision-relevant claims require deterministic checks and a fresh
+  verifier context before the harness may append them to Evidence.
 - The generator cannot approve its own evidence or final answer.
 - Generic checks establish only the property they actually test. They do not
   establish mechanism, causality, extrapolation, or scientific qualification.
@@ -25,8 +26,8 @@ and centered on solving real mathematical-modeling problems.
 - Add code only for a failure repeated on frozen unseen tasks.
 - Do not introduce fixed stages, model-family allowlists, certificate stacks,
   or duplicate state planes.
-- Keep the source facts in the Problem Graph, execution observations, and
-  Evidence Graph. Derive status and delivery projections from them.
+- Keep source facts in working research records, execution events, and the
+  append-only Evidence log. Derive graphs, status, and delivery projections.
 - Preserve failed attempts and revocation lineage; do not present a stopped or
   unchecked run as successful modeling.
 - Keep dependencies optional unless the core cannot work without them.
