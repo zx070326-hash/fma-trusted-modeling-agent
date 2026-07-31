@@ -1,5 +1,0 @@
-# V5.6 freezes the exact threshold file bytes as well as semantic content.
-/V5_6_HYBRID_THRESHOLDS.json -text
-
-# V5.7 freezes the exact adaptive positive-series threshold bytes.
-/V5_7_ADAPTIVE_THRESHOLDS.json -text

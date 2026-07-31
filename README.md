@@ -1,240 +1,119 @@
-# FMA Trusted Modeling Agent
+# THIN Modeling Agent
 
-FMA 是一个由 Codex 驱动、由确定性 Harness 掌握验证权的数学建模 Agent。
-它把问题定义、多方向候选、可执行模型、L0–L4 检查、失败恢复、任务运营和
-外部资格协议放进同一张可审计的建模图中。
+THIN 是一个面向真实、未见数学建模问题的轻量 Agent Harness。它不规定模型族，
+也不把研究过程塞进固定阶段。推荐的 `native` 模式让 Codex 在隔离工作区中使用
+原生 shell、读写和推理能力；Harness 只冻结任务合同、限制副作用、重放关键计算、
+检查证据，并让新的 verifier 上下文复核最终声明。
 
-> English summary: FMA is a graph-native mathematical-modeling agent whose
-> language models propose work while typed, fail-closed code owns evidence,
-> verification, recovery, and workflow transitions.
-
-当前版本：`0.4.0`（V7.1 Native Paper Delivery）。
-
-## 当前能做什么
-
-| 能力 | 当前状态 |
-|---|---|
-| 任务附件与目标接入 | V7 内容寻址 Intake、幂等提交和完整 manifest |
-| 问题定义 | Codex 角色生成，Harness 类型校验，独立 referee 复核 |
-| 多方向建模 | S1 机制、空基线、统计、系统学习分支并行探索 |
-| 任务内知识共享 | 受限 Knowledge Broker、来源绑定和迁移审计 |
-| 可执行建模 | 已注册正值标量自治 ODE 与 adaptive positive-series 能力包 |
-| 科学检查 | 输入绑定的 L0–L4、rolling-origin、基线、UQ 和支持域检查 |
-| 失败恢复 | PATCH、RETRY、BRANCH、ACQUIRE_DATA、HUMAN、ABSTAIN |
-| 运营连续性 | SQLite WAL、lease、heartbeat、fencing、reconcile、doctor |
-| 界面 | 本地 Studio Bridge 与 Web 前端 |
-| 完整论文交付 | 请求 `gpt-5.6-sol` 的新上下文成文、声明/数字/引用/图表绑定、XeLaTeX、逐页 PNG 和冷启动双审 |
-| 外部科学资格 | 协议和验证器已实现；没有外部独立节点时固定为 `NOT_RUN` |
-
-当前可执行后半链路仍是窄域能力：
-
-- 至少 12 个严格递增时间点的正值标量序列，可进入自治 ODE 候选族；
-- 至少 26 个观测的正值序列，可进入 adaptive positive-series 候选族；
-- 注册骨架主要覆盖 constant、exponential、Gompertz、logistic、
-  log-drift 与 log-growth AR(1)；
-- 不兼容问题会返回能力缺口或弃权，不会静默换成另一个模型。
-
-## 当前不能声称什么
-
-FMA 还不是任意前沿数学问题的通用自动求解器。仓库中的本地运行、测试、
-同机多进程和 Gate 证书均不能单独证明：
-
-- 模型具有机制真实性或因果有效性；
-- 结果已通过独立外部科学资格；
-- 模型可以安全外推到未支持的人群、机制或时间范围；
-- 系统获得现实世界、监管、财务或安全相关行动权限。
-
-模型可以提出候选、诊断失败和运行允许的工具；Harness 独占输入冻结、
-artifact hash、typed checks、图转移和撤销。外部科学资格仍需仓库外的
-Custodian、Registry、Evaluator、Promotion Authority 和独立信任根。
-
-## 架构
+## 核心链路
 
 ```mermaid
-flowchart TD
-    U["用户 / Browser / Codex"] --> OP["V7 Operator Plane"]
-    OP --> IN["Immutable Intake + Task Ledger"]
-    IN --> G["Graph-native S0-S6 Workspace"]
-
-    G --> S0["S0 问题与决策契约"]
-    S0 --> S1["S1 多分支候选 + 知识共享"]
-    S1 --> R["Capability Router"]
-    R --> ODE["Scalar Autonomous ODE Pack"]
-    R --> APS["Adaptive Positive-Series Pack"]
-    R --> GAP["Capability Gap / Human / Abstain"]
-
-    ODE --> V["Harness L0-L4 + Replay + UQ"]
-    APS --> V
-    V --> REC{"通过当前阶段？"}
-    REC -->|"否"| BACK["诊断、撤销、补丁、换分支或采数"]
-    BACK --> G
-    REC -->|"是"| DOS["Decision Dossier + S6 consistency paper"]
-    DOS --> PUB["V7.1 Native Paper Delivery"]
-    PUB --> PQA["Claim audit + cold semantic review + PDF page review"]
-
-    DOS -. "独立控制域" .-> EXT["External Qualification"]
-    EXT --> Q["QUALIFY / REJECT / NOT_RUN"]
+flowchart LR
+    P["冻结的任务合同"] --> R["Native Codex 研究循环"]
+    R <--> W["隔离的任务工作区"]
+    R --> M["submission_manifest.json"]
+    M --> C{"合同与路径检查"}
+    C -->|"失败"| R
+    C -->|"通过"| X["清洁环境重放生成器"]
+    X --> K{"声明的检查"}
+    K -->|"失败"| R
+    K -->|"通过"| V["新上下文独立复核"]
+    V -->|"拒绝 + 反馈"| R
+    V -->|"局部支持"| D["保留交付物与证据清单"]
 ```
 
-设计上的核心分工：
+- Codex 自己决定问题分解、模型族、代码结构、实验顺序和何时换向。
+- `submission_manifest.json` 只描述交付物、声明、生成器和检查，不规定研究过程。
+- Harness 重放声明的 Python 生成器，并要求关键输出与原输出逐字节一致。
+- 最终 verifier 只看冻结合同、交付物和重放记录，不能批准无证据的强声明。
+- 失败时只把具体反馈送回研究循环；达到预算后保留最佳交付物并如实标记未验证。
 
-- 文件系统保存可移植、内容寻址的科学证据；
-- SQLite 保存事务化的运营状态，不进入科学 manifest；
-- Agent 负责提出和计算，Harness 负责承认或拒绝；
-- 失败会形成新 attempt 和撤销闭包，不覆盖历史；
-- 并行度来自隔离写集，而不是简单增加 Agent 数量。
+## 安装
 
-## 三分钟开始
-
-要求：
-
-- Python 3.11 或更高版本；
-- 完整 Studio 角色运行需要可用的 Codex CLI；
-- Web 前端需要 Node.js 22.13 或更高版本。
-- V7.1 完整论文需要 XeLaTeX、Poppler 的 `pdfinfo`/`pdftoppm`，以及
-  `Noto Serif SC`、`Noto Sans SC` 字体。
-
-安装 Python 包：
+需要 Python 3.11+ 和可用的 Codex CLI。
 
 ```powershell
-git clone https://github.com/zx070326-hash/fma-trusted-modeling-agent.git
-Set-Location fma-trusted-modeling-agent
-
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install ".[test]"
+python -m pip install -e ".[test]"
+python -m modeling_agent --version
 ```
 
-创建一个不带科学权限的运营 Intake：
+核心运行时只使用 Python 标准库；`pytest` 仅用于测试。
+
+## 推荐运行：Native Codex + Thin Sidecar
 
 ```powershell
-fma-ops --task-root .\tasks intake `
-  --idempotency-key example-001 `
-  --objective "Estimate and validate the dynamics described by the supplied data."
-
-fma-ops --task-root .\tasks status
-fma-ops --task-root .\tasks doctor
+python -m modeling_agent native `
+  --workspace D:\runs\my-problem `
+  --objective "在这里给出完整的建模问题" `
+  --max-attempts 2 `
+  --max-seconds 1800
 ```
 
-查看主要命令：
+首次运行会在工作区冻结默认合同。需要改变必须交付的文件、最低生成器或检查数量时，
+可显式传入 `--contract contract.json`；合同一旦写入工作区就不能静默替换。
+
+查看状态：
 
 ```powershell
-fma-ops --help
-fma-studio --help
-fma-paper --help
-python -m fma --help
-python -m fma.v5 --help
+python -m modeling_agent status --workspace D:\runs\my-problem
 ```
 
-在一个已有当前 S6 Gate 的任务上生成完整论文：
+主要状态保存在：
 
-```powershell
-fma-paper run `
-  --workspace .\tasks\<task-id> `
-  --key-file C:\secure\fma-authority.key `
-  --title "Evidence-bound Mathematical Modeling Study" `
-  --author "Your Name" `
-  --model gpt-5.6-sol `
-  --codex-bin C:\path\to\codex.exe
+```text
+<workspace>/
+  .modeling-agent/task-contract.json
+  .modeling-agent/native-state.json
+  .modeling-agent/native-events.jsonl
+  submission_manifest.json
+  paper/final.md
 ```
 
-该链路把新 Codex 上下文用作作者，再由作者上下文之外的新上下文复核每项 claim；
-Harness 注入机器数值，逐字段校验已进入 S0--S6 的结构化引用快照，并校验
-图表与 CSV 哈希；连续两遍编译 XeLaTeX，把每一页 PNG 交给冷启动版式角色，
-随后在干净目录重编译、重渲染并逐哈希比对。最终
-`DRAFT_READY` 只表示论文交付闭合，不表示底层模型已取得科学资格、外部
-有效性或现实行动权限。命令记录 requested model，但
-`served_model_attested=false`。
+旧的 `run` 命令仍保留，用作结构化 Problem Graph 循环的消融臂，不再是默认产品路径。
 
-运行精简后的公开契约测试：
+## 冻结对照实验
+
+先冻结同一任务、模型、预算、评分规则、简单基线和独立评分者：
 
 ```powershell
+python -m modeling_agent ablation-init `
+  --output D:\runs\experiment\ablation.json `
+  --objective "未见任务原文"
+```
+
+三个实验臂是：
+
+1. `raw_codex`：一次原生模型回答；
+2. `thin_harness`：原有结构化 Problem Graph 循环；
+3. `native_sidecar`：原生 Codex 研究循环加最小合同、重放和最终复核。
+
+内部测试通过只证明实现符合合同。只有冻结未见任务上的盲评结果，才能说明
+`native_sidecar` 是否优于裸 Codex 或原有 THIN。
+
+## 能力边界
+
+- Native 研究循环依赖 Codex 的 `workspace-write` 沙箱；Windows 嵌套运行显式使用
+  受限 token 的 `unelevated` 实现，Sidecar 另做路径和合同检查；
+- 当前只能在运行结束后统计 Codex 的可观察工具调用，不能在单次原生循环中硬截断调用数；
+- 只重放 manifest 声明的 Python 生成器，未声明或非 Python 计算不获得同等级复现保证；
+- 新 verifier 上下文不是外部科学同行评议；
+- 通用机械检查不能自动证明因果、机制、稳健性或外推；
+- 默认关闭联网、插件、浏览器、安装依赖和任务目录外写入，也不授权现实世界行动；
+- 是否真正提升建模能力，必须由冻结的未见任务和外部评分证明。
+
+详细设计见 [THIN_MODELING_AGENT.md](docs/architecture/THIN_MODELING_AGENT.md)。
+
+## 开发
+
+```powershell
+python -m pytest tests/test_thin_modeling_agent.py -q
 python -m pytest
 ```
 
-启动前端：
-
-```powershell
-Set-Location frontend
-npm install
-npm test
-npm run dev
-```
-
-本地 Studio Bridge 需要至少 32 字节、位于任务工作区之外的 authority key，
-以及至少 24 字符的 `FMA_STUDIO_TOKEN`。完整参数请运行
-`fma-studio --help`；密钥不得写入仓库或浏览器。
-
-## 主要入口
-
-| 入口 | 用途 |
-|---|---|
-| `fma-ops` | Intake、状态、Next Packet、reconcile 和 doctor |
-| `fma-studio` | 仅绑定 loopback 的本地执行 Bridge |
-| `fma-paper` | S6 后原生 Codex 完整论文、双重复核、PDF 构建与失效验证 |
-| `python -m fma` | 早期可信建模内核和 benchmark 命令 |
-| `python -m fma.v5` | S0–S6 工作区、Gate、撤销和论文构建 |
-| `frontend/` | 面向任务、图、候选和证据状态的 Web 界面 |
-
-## 仓库导航
+目录保持刻意精简：
 
 ```text
-fma/
-  operator_v70.py       # V7 事务化任务账本与恢复
-  operator_cli_v70.py   # fma-ops JSON CLI
-  studio/               # Codex 阶段驱动、HTTP Bridge、后半链路
-  v5/                   # Graph-native S0-S6 权威工作区
-  v5_8/                 # 多分支知识共享与认识图
-  v6/                   # 能力包、恢复、科学成功与外部资格
-  v7_1/                 # 证据约束的原生 Codex 论文交付
-frontend/               # Web 控制台
-tests/                  # 精简的公开契约与 Operator 测试
+modeling_agent/                         # 唯一运行时包
+tests/test_thin_modeling_agent.py       # 核心合同测试
+docs/architecture/THIN_MODELING_AGENT.md
 ```
-
-公开主干刻意不包含运行数据库、完整 campaign 输出、历史实验 receipts、
-迭代研究笔记和内部循环状态。这些文件不是运行 FMA 所必需的源码，也不应让
-默认分支变成开发过程转储。清理前的完整 V6–V7 证据快照保留在
-`evidence-archive-v7.0` tag；删除默认树中的过程材料不提高任何科学结论的等级。
-
-## 关键文档
-
-- [文档导航](docs/README.md)：当前规范、科学治理与历史基础的阅读顺序。
-- [V7 Operator Plane](docs/architecture/V7_OPERATOR_PLANE.md)：运营账本、租约、fencing、
-  intake、reconcile 和权限边界。
-- [V7.1 Native Paper Delivery](docs/publication/V7_1_NATIVE_PAPER_DELIVERY.md)：原生成文、
-  证据账本、独立语义/版式复核和逐页 PDF 交付。
-- [V6 Graph-native Recovery](docs/architecture/V6_GRAPH_NATIVE_RECOVERY.md)：失败诊断、
-  撤销闭包和 attempt lineage。
-- [V6.8 Capability Pack Factory](docs/capabilities/V6_8_CAPABILITY_PACK_FACTORY.md)：能力包
-  manifest、typed IR 和输入绑定 verifier。
-- [V6.9 Development Portfolio Lane](docs/architecture/V6_9_DEVELOPMENT_PORTFOLIO_LANE.md)：
-  多骨架比较与弃权。
-- [V6.3 External Qualification](docs/governance/V6_3_EXTERNAL_QUALIFICATION.md)：外部预测、
-  私测、promotion 和独立信任边界。
-- [V6.1 Scientific Success Gate](docs/governance/V6_1_SCIENTIFIC_SUCCESS_GATE.md)：
-  claim-relative 科学成功定义。
-- [V5 Graph-native Stage Workspace](docs/architecture/V5_GRAPH_NATIVE_STAGE_WORKSPACE.md)：
-  S0–S6 工作区和 Gate 协议。
-- [V5.6 Hybrid ODE](docs/capabilities/V5_6_HYBRID_ODE.md) 与
-  [V5.7 Adaptive Positive Series](docs/capabilities/V5_7_ADAPTIVE_POSITIVE_SERIES.md)：
-  当前两个窄域建模方向。
-- [迁移说明](docs/MIGRATION.md)：在新电脑重建开发环境。
-
-## 公开验证范围
-
-公开测试保留的是最小可信契约：
-
-- 基础 trusted chain；
-- V5 stage workspace、external harness、paper、scaffold 和 single-writer；
-- V6 scientific success、external qualification、recovery、capability SDK
-  和 portfolio runtime；
-- V7 authority、ledger、intake、CLI 和 HTTP operator surface；
-- 前端构建与 rendered HTML。
-
-它们验证工程契约和回归边界，不构成现实数据有效性或外部科学资格。
-
-## 许可证
-
-仓库目前公开可读，但尚未加入开源 `LICENSE`。在许可证明确之前，公开可见
-不等于自动授予复制、修改或再分发权。
