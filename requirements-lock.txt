@@ -1,6 +1,2 @@
-# Reference versions used by the public V7 validation environment.
-cryptography==48.0.0
-numpy==2.4.4
-pydantic==2.12.3
+# Development/test dependency used by the validated local environment.
 pytest==9.0.3
-scipy==1.17.1

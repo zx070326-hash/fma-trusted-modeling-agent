@@ -23,9 +23,11 @@ htmlcov/
 *private_key*.pem
 
 # Local scratch and generated run output
+/.codex-docs-temp/
+/.codex_runtime/
 /.tmp-*
+/.test-tmp-*
 /tmp/
-/.fma-op-v70/
 /tasks/
 /runs/
 /artifacts/
@@ -38,10 +40,4 @@ htmlcov/
 /codex_agent_output_final/
 /codex_agent_output_v2/
 /codex_agent_release/
-/fma_bench_live_smoke/
-/fma_bench_live_v0/
-/fma_bench_release/
-/fma_bench_release_complete/
-/fma_bench_v0_accepted/
-/fma_bench_v0_final/
-/fma_bench_v0_release_799aff/
+/output/
