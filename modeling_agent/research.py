@@ -69,8 +69,6 @@ class ResearchStore:
     def project_graph(self) -> dict[str, Any]:
         nodes: dict[str, dict[str, Any]] = {}
         for record in self.records():
-            if record["kind"] not in {"question", "hypothesis", "dead_end", "decision"}:
-                continue
             identifier = str(record.get("node_id") or record["id"])
             nodes[identifier] = {
                 "id": identifier,
@@ -79,7 +77,19 @@ class ResearchStore:
                 "depends_on": record.get("depends_on", []),
                 "authority": "working",
             }
-        return {"nodes": nodes, "derived": True}
+        dangling = sorted(
+            {
+                dependency
+                for node in nodes.values()
+                for dependency in node["depends_on"]
+                if dependency not in nodes
+            }
+        )
+        return {
+            "nodes": nodes,
+            "derived": True,
+            "dangling_dependencies": dangling,
+        }
 
 
 def load_branch_requests(layout: RunLayout, *, max_branches: int) -> list[dict[str, str]]:

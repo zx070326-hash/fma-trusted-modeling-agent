@@ -23,7 +23,10 @@ htmlcov/
 *private_key*.pem
 
 # Local scratch and generated run output
+/.codex-docs-temp/
+/.codex_runtime/
 /.tmp-*
+/.test-tmp-*
 /tmp/
 /tasks/
 /runs/

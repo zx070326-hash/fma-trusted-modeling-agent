@@ -6,7 +6,6 @@ import ast
 import json
 import math
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -15,7 +14,9 @@ from typing import Any
 
 from .model import (
     _WORKSPACE_ONLY_PROFILE,
+    _windows_sandbox_args,
     _workspace_only_profile_args,
+    discover_codex_cli,
     ensure_workspace_only_sandbox,
 )
 from .storage import file_hash, safe_path
@@ -153,25 +154,30 @@ def _compute_environment(workspace: Path) -> dict[str, str]:
 def _python_command(
     workspace: Path,
     command: list[str],
+    executable: str | Path | None = None,
 ) -> tuple[list[str], str]:
     """Wrap generated Python in an OS-enforced Codex permission profile.
 
     Unit tests replace this private function with a deterministic fake. The
     production API has no switch that disables the OS sandbox.
     """
-    configured = os.environ.get("MODELING_AGENT_CODEX_BIN")
-    executable = configured or shutil.which("codex")
-    if not executable:
-        raise RuntimeError(
-            "no Codex CLI is available for OS-sandboxed Python execution"
+    if executable is not None:
+        executable_path = Path(executable).resolve()
+        if not executable_path.is_file():
+            raise RuntimeError(
+                f"configured Codex CLI is not a file: {executable_path}"
+            )
+    else:
+        executable_path = discover_codex_cli(
+            os.environ.get("MODELING_AGENT_CODEX_BIN")
         )
-    executable_path = Path(executable).resolve()
     ensure_workspace_only_sandbox(
         executable_path, workspace.resolve(), timeout_seconds=20
     )
     return (
         [
             str(executable_path),
+            *_windows_sandbox_args(),
             "sandbox",
             "-C",
             str(workspace),
@@ -188,8 +194,18 @@ def _python_command(
 class ToolRegistry:
     """Only project-local read, write, and bounded Python computation."""
 
-    def __init__(self, workspace: Path):
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        codex_executable: str | Path | None = None,
+        execution_mode: str = "isolated",
+    ):
+        if execution_mode not in {"isolated", "local-diagnostic"}:
+            raise ValueError("execution_mode must be isolated or local-diagnostic")
         self.workspace = workspace.resolve()
+        self.codex_executable = codex_executable
+        self.execution_mode = execution_mode
 
     @property
     def descriptions(self) -> list[dict[str, Any]]:
@@ -404,10 +420,19 @@ class ToolRegistry:
             )
         started = time.monotonic()
         try:
-            command, sandbox = _python_command(
-                self.workspace,
-                [sys.executable, "-I", str(script), *argv],
-            )
+            python = [sys.executable, "-I", str(script), *argv]
+            if self.execution_mode == "local-diagnostic":
+                command, sandbox = python, "local-diagnostic-no-os-isolation"
+            else:
+                command, sandbox = (
+                    _python_command(
+                        self.workspace,
+                        python,
+                        self.codex_executable,
+                    )
+                    if self.codex_executable is not None
+                    else _python_command(self.workspace, python)
+                )
             process = subprocess.run(
                 command,
                 cwd=self.workspace,
@@ -500,6 +525,8 @@ def run_check(
     arguments: dict[str, Any],
     *,
     timeout: float = 60,
+    codex_executable: str | Path | None = None,
+    execution_mode: str = "isolated",
 ) -> dict[str, Any]:
     """Run one check. Unknown or malformed checks fail closed."""
 
@@ -552,10 +579,21 @@ def run_check(
             audit_errors = _audit_python_source(script.read_text(encoding="utf-8"))
             if audit_errors:
                 return {"kind": kind, "script": relative, "ok": False, "errors": audit_errors}
-            command, sandbox = _python_command(
-                workspace.resolve(),
-                [sys.executable, "-I", str(script)],
-            )
+            python = [sys.executable, "-I", str(script)]
+            if execution_mode == "local-diagnostic":
+                command, sandbox = python, "local-diagnostic-no-os-isolation"
+            elif execution_mode == "isolated":
+                command, sandbox = (
+                    _python_command(
+                        workspace.resolve(),
+                        python,
+                        codex_executable,
+                    )
+                    if codex_executable is not None
+                    else _python_command(workspace.resolve(), python)
+                )
+            else:
+                raise ValueError("invalid check execution_mode")
             process = subprocess.run(
                 command,
                 cwd=workspace,

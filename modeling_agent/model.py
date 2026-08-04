@@ -1,4 +1,4 @@
-"""Codex CLI adapters with explicit sandbox, network, and trace contracts."""
+"""Independent Codex verifier adapters with explicit execution contracts."""
 
 from __future__ import annotations
 
@@ -22,6 +22,14 @@ NETWORK_MODES = {
     "offline-compute",
     "delivery",
 }
+
+NON_INTERACTIVE_APPROVAL_POLICY = "never"
+WINDOWS_SANDBOX_BACKEND = "unelevated"
+_NON_INTERACTIVE_NOTICE = (
+    "This is a non-interactive harness run. Never request approval or user input. "
+    "Use only the permissions already granted; if an action is unavailable, record "
+    "the limitation and continue with allowed alternatives.\n\n"
+)
 
 
 def _validate_network_mode(value: str) -> str:
@@ -158,11 +166,20 @@ class ScriptedModel:
             )
         self.last_receipt = {
             "role": role,
+            "codex_executable": "scripted",
             "network_mode": network_mode,
             "observable_web_calls": 0,
             "observable_web_queries": [],
             "observable_tool_calls": 0,
             "sandbox": "read-only",
+            "sandbox_profile": ":read-only",
+            "workspace": str(workspace.resolve()),
+            "approval_policy": NON_INTERACTIVE_APPROVAL_POLICY,
+            "windows_sandbox": (
+                WINDOWS_SANDBOX_BACKEND if os.name == "nt" else None
+            ),
+            "interactive": False,
+            "observable_interaction_requests": 0,
             "tool_free": True,
             "ephemeral": True,
             "trace_sha256": file_hash(trace_path) if trace_path is not None else "scripted",
@@ -251,6 +268,7 @@ def _trace_counts(path: Path | None) -> dict[str, Any]:
     web_ids: set[str] = set()
     web_queries: set[str] = set()
     commands: set[str] = set()
+    interaction_ids: set[str] = set()
     messages = 0
     if path is None or not path.is_file():
         return {
@@ -258,6 +276,7 @@ def _trace_counts(path: Path | None) -> dict[str, Any]:
             "observable_web_calls": 0,
             "observable_web_queries": [],
             "observable_commands": [],
+            "observable_interaction_requests": 0,
             "agent_messages": 0,
         }
     for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines()):
@@ -269,6 +288,26 @@ def _trace_counts(path: Path | None) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         kind = item.get("type")
+        interaction_signature = " ".join(
+            str(value).casefold()
+            for value in (
+                event.get("type"),
+                kind,
+                item.get("name"),
+                item.get("tool_name"),
+            )
+            if value is not None
+        )
+        if any(
+            marker in interaction_signature
+            for marker in (
+                "approval",
+                "request_permissions",
+                "request_user_input",
+                "elicitation",
+            )
+        ):
+            interaction_ids.add(str(item.get("id") or event.get("id") or number))
         if kind == "agent_message" and event.get("type") == "item.completed":
             messages += 1
         if kind in {"command_execution", "file_change", "mcp_tool_call", "tool_call"}:
@@ -287,6 +326,7 @@ def _trace_counts(path: Path | None) -> dict[str, Any]:
         "observable_web_calls": len(web_ids),
         "observable_web_queries": sorted(web_queries),
         "observable_commands": sorted(commands),
+        "observable_interaction_requests": len(interaction_ids),
         "agent_messages": messages,
     }
 
@@ -303,6 +343,14 @@ _DISABLED_SHARED = (
 )
 
 _WORKSPACE_ONLY_PROFILE = "modeling-workspace-only"
+
+
+def _windows_sandbox_args() -> list[str]:
+    return (
+        ["-c", f'windows.sandbox="{WINDOWS_SANDBOX_BACKEND}"']
+        if os.name == "nt"
+        else []
+    )
 
 
 def _workspace_only_profile_args() -> list[str]:
@@ -333,6 +381,7 @@ def ensure_workspace_only_sandbox(
     denied.write_text(token, encoding="utf-8")
     base = [
         str(executable),
+        *_windows_sandbox_args(),
         "sandbox",
         "-C",
         str(workspace),
@@ -398,24 +447,40 @@ def _base_argv(
     workspace: Path,
     model: str,
     sandbox: str,
+    sandbox_profile: str | None = None,
     network_mode: str,
     tool_free: bool,
 ) -> list[str]:
-    permission_profile = (
-        _WORKSPACE_ONLY_PROFILE if sandbox == "workspace-write" else ":read-only"
-    )
+    if sandbox == "workspace-write":
+        permission_profile = sandbox_profile or _WORKSPACE_ONLY_PROFILE
+        if permission_profile not in {_WORKSPACE_ONLY_PROFILE, ":workspace"}:
+            raise ValueError(
+                f"unapproved workspace permission profile: {permission_profile}"
+            )
+    elif sandbox == "read-only":
+        if sandbox_profile not in {None, ":read-only"}:
+            raise ValueError(
+                f"unapproved read-only permission profile: {sandbox_profile}"
+            )
+        permission_profile = ":read-only"
+    else:
+        raise ValueError(f"unsupported Codex sandbox mode: {sandbox}")
+    uses_permission_profile = permission_profile == _WORKSPACE_ONLY_PROFILE
+    profile_args = _workspace_only_profile_args() if uses_permission_profile else []
     argv = [
         str(executable),
-        *(_workspace_only_profile_args() if sandbox == "workspace-write" else []),
+        *_windows_sandbox_args(),
+        *profile_args,
         "-c",
-        f'default_permissions="{permission_profile}"',
+        f'approval_policy="{NON_INTERACTIVE_APPROVAL_POLICY}"',
         "--ask-for-approval",
-        "never",
-        "-C",
-        str(workspace),
-        "--model",
-        model,
+        NON_INTERACTIVE_APPROVAL_POLICY,
     ]
+    if uses_permission_profile:
+        argv.extend(["-c", f'default_permissions="{permission_profile}"'])
+    else:
+        argv.extend(["--sandbox", sandbox])
+    argv.extend(["-C", str(workspace), "--model", model])
     if network_mode in {"research-search", "source-review"}:
         argv.append("--search")
     disabled = [*_DISABLED_SHARED]
@@ -511,7 +576,7 @@ class CodexCLIModel:
                 result = subprocess.run(
                     argv,
                     cwd=workspace,
-                    input=prompt,
+                    input=_NON_INTERACTIVE_NOTICE + prompt,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
@@ -530,11 +595,18 @@ class CodexCLIModel:
                 "time": now(),
                 "role": role,
                 "model_requested": self.model,
+                "codex_executable": str(self.executable),
                 "returncode": result.returncode,
                 "duration_seconds": round(time.monotonic() - started, 6),
                 "network_mode": network_mode,
                 "sandbox": "read-only",
                 "sandbox_profile": ":read-only",
+                "workspace": str(workspace),
+                "approval_policy": NON_INTERACTIVE_APPROVAL_POLICY,
+                "windows_sandbox": (
+                    WINDOWS_SANDBOX_BACKEND if os.name == "nt" else None
+                ),
+                "interactive": False,
                 "tool_free": True,
                 "ephemeral": True,
                 "trace": str(trace_path) if trace_path is not None else None,
@@ -542,6 +614,10 @@ class CodexCLIModel:
                 "stderr_tail": (result.stderr or "")[-2000:],
                 **_trace_counts(trace_path),
             }
+            if self.last_receipt["observable_interaction_requests"]:
+                raise RuntimeError(
+                    f"Codex {role} violated the non-interactive execution contract"
+                )
             if result.returncode != 0:
                 raise RuntimeError(f"Codex {role} failed: {(result.stderr or result.stdout)[-2000:]}")
             try:
@@ -550,123 +626,3 @@ class CodexCLIModel:
                 raise RuntimeError(f"Codex {role} returned invalid JSON") from exc
             _validate_schema(value, schema)
             return value
-
-
-class NativeCodexResearcher:
-    """One bounded Codex research session rooted only at its writable work tree."""
-
-    def __init__(
-        self,
-        *,
-        model: str = "gpt-5.6-sol",
-        executable: str | Path | None = None,
-    ):
-        self.model = model
-        self.executable = discover_codex_cli(executable)
-        self.last_receipt: dict[str, Any] | None = None
-        self._qualified_workspaces: set[Path] = set()
-
-    def _ensure_workspace_sandbox(
-        self, workspace: Path, *, timeout_seconds: float
-    ) -> None:
-        """Prove allowed workspace reads and denied parent reads before starting Lead."""
-
-        if workspace in self._qualified_workspaces:
-            return
-        ensure_workspace_only_sandbox(
-            self.executable, workspace, timeout_seconds=timeout_seconds
-        )
-        self._qualified_workspaces.add(workspace)
-
-    def run(
-        self,
-        prompt: str,
-        *,
-        role: str,
-        workspace: Path,
-        trace_path: Path,
-        timeout_seconds: float,
-        network_mode: str = "offline-compute",
-    ) -> dict[str, Any]:
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-        network_mode = _validate_network_mode(network_mode)
-        if network_mode not in {"research-search", "offline-compute"}:
-            raise ValueError("researcher requires research-search or offline-compute")
-        workspace = workspace.resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        trace_path = trace_path.resolve()
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        started = time.monotonic()
-        self._ensure_workspace_sandbox(workspace, timeout_seconds=timeout_seconds)
-        remaining = timeout_seconds - (time.monotonic() - started)
-        if remaining <= 0:
-            raise TimeoutError(f"Codex {role} budget exhausted during sandbox preflight")
-        with tempfile.TemporaryDirectory(prefix=f"modeling-{role}-") as directory:
-            output_path = Path(directory) / "last-message.txt"
-            argv = _base_argv(
-                self.executable,
-                workspace=workspace,
-                model=self.model,
-                sandbox="workspace-write",
-                network_mode=network_mode,
-                tool_free=False,
-            )
-            argv.extend(
-                [
-                    "exec",
-                    "--ephemeral",
-                    "--skip-git-repo-check",
-                    "--ignore-user-config",
-                    "--ignore-rules",
-                    "--json",
-                    "--color",
-                    "never",
-                    "--output-last-message",
-                    str(output_path),
-                    "-",
-                ]
-            )
-            try:
-                with trace_path.open("w", encoding="utf-8", newline="\n") as trace:
-                    result = subprocess.run(
-                        argv,
-                        cwd=workspace,
-                        input=prompt,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        stdout=trace,
-                        stderr=subprocess.PIPE,
-                        shell=False,
-                        timeout=remaining,
-                        env=_clean_environment(),
-                    )
-            except subprocess.TimeoutExpired as exc:
-                raise TimeoutError(f"Codex {role} session timed out") from exc
-            last_message = (
-                output_path.read_text(encoding="utf-8", errors="replace")
-                if output_path.is_file()
-                else ""
-            )
-            receipt = {
-                "time": now(),
-                "role": role,
-                "model_requested": self.model,
-                "sandbox": "workspace-write",
-                "sandbox_profile": _WORKSPACE_ONLY_PROFILE,
-                "sandbox_implementation": "platform-native-permission-profile",
-                "sandbox_preflight": "allowed-workspace-and-denied-parent",
-                "network_mode": network_mode,
-                "returncode": result.returncode,
-                "duration_seconds": round(time.monotonic() - started, 6),
-                "trace": str(trace_path),
-                "trace_sha256": file_hash(trace_path),
-                "stderr_tail": (result.stderr or "")[-2000:],
-                "last_message_tail": last_message[-4000:],
-                **_trace_counts(trace_path),
-            }
-            self.last_receipt = receipt
-            if result.returncode != 0:
-                raise RuntimeError(f"Codex {role} failed: {(result.stderr or last_message)[-2000:]}")
-            return receipt

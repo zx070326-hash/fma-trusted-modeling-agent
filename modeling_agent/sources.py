@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from .model import ModelAdapter
+from .model import ModelAdapter, WINDOWS_SANDBOX_BACKEND
 from .storage import RunLayout, atomic_write_json, content_hash, file_hash, now, safe_path
+
+
+SOURCE_GATE_NOT_RUN_PREFIX = "SOURCE_GATE_NOT_RUN:"
 
 
 SOURCE_REVIEW_SCHEMA: dict[str, Any] = {
@@ -223,23 +227,46 @@ class SourceGate:
                     timeout_seconds=remaining,
                 )
             except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-                errors.append(f"source {identifier} review failed: {type(exc).__name__}: {exc}")
+                errors.append(
+                    f"{SOURCE_GATE_NOT_RUN_PREFIX} source {identifier} review failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 continue
             receipt = getattr(self.reviewer, "last_receipt", None)
             trace_sha = file_hash(trace_path) if trace_path.is_file() else None
             local_errors = _validate_review(candidate, review)
+            receipt_errors: list[str] = []
             if not isinstance(receipt, dict) or receipt.get("observable_web_calls", 0) < 1:
-                local_errors.append("source review has no observable web access")
+                receipt_errors.append("source review has no observable web access")
             elif candidate["url"] not in receipt.get("observable_web_queries", []):
-                local_errors.append("source review trace is not bound to the exact candidate URL")
+                receipt_errors.append(
+                    "source review trace is not bound to the exact candidate URL"
+                )
+            expected_executable = getattr(self.reviewer, "executable", None)
             if isinstance(receipt, dict) and (
                 receipt.get("network_mode") != "source-review"
                 or receipt.get("sandbox") != "read-only"
+                or receipt.get("sandbox_profile") != ":read-only"
+                or receipt.get("workspace") != str(self.layout.root.resolve())
+                or receipt.get("approval_policy") != "never"
+                or receipt.get("windows_sandbox")
+                != (WINDOWS_SANDBOX_BACKEND if os.name == "nt" else None)
+                or not isinstance(receipt.get("codex_executable"), str)
+                or not receipt.get("codex_executable")
+                or (
+                    expected_executable is not None
+                    and receipt.get("codex_executable") != str(expected_executable)
+                )
+                or receipt.get("interactive") is not False
+                or receipt.get("observable_interaction_requests", 0) != 0
                 or receipt.get("tool_free") is not True
                 or receipt.get("ephemeral") is not True
                 or receipt.get("trace_sha256") != trace_sha
             ):
-                local_errors.append("source reviewer receipt violates the fresh read-only contract")
+                receipt_errors.append(
+                    "source reviewer receipt violates the fresh read-only contract"
+                )
+            local_errors.extend(receipt_errors)
             record = {
                 "schema": 1,
                 "candidate": candidate,
@@ -274,6 +301,11 @@ class SourceGate:
             }
             if local_errors:
                 errors.extend(f"source {identifier}: {item}" for item in local_errors)
+                if receipt_errors:
+                    errors.append(
+                        f"{SOURCE_GATE_NOT_RUN_PREFIX} source {identifier} "
+                        "review execution was not independently observable"
+                    )
             elif review["verdict"] != "SUPPORTED":
                 errors.append(f"source {identifier} verdict is {review['verdict']}")
         return verdicts, errors
